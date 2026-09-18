@@ -125,3 +125,11 @@ async def _live_signal_loop():
             break
         except Exception as e:
             logger.error(f"Live signal error: {e}")
+
+@app.get("/")
+async def root():
+    return {
+        "project": "REACT-X",
+        "status": "Backend running",
+        "docs": "/docs"
+    }
