@@ -1,6 +1,6 @@
 @"
-backend/.env
-backend/*.db
+.env
+*.db
 __pycache__/
 *.pyc
-"@ | Out-File -Encoding utf8 .gitignore
+"@ | Out-File -Encoding utf8 backend\.gitignore
