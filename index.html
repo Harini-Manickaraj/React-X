@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>REACT-X — Incident Management</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCREEN: HOME
+     ═══════════════════════════════════════════════════════ -->
+<div id="screen-home" class="screen active">
+
+  <!-- ── Top bar ── -->
+  <header class="home-topbar">
+    <div class="home-topbar-inner">
+      <div class="home-topbar-logo">
+        <svg width="30" height="30" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="8" fill="#1a1a2e"/>
+          <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#818cf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span class="home-topbar-brand">REACT-X</span>
+      </div>
+      <nav class="home-topbar-nav">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#stats">Stats</a>
+      </nav>
+      <div class="home-topbar-actions">
+        <button class="btn-home-ghost" onclick="App.showScreen('login')">Sign In</button>
+        <button class="btn-home-solid" onclick="App.showScreen('signup')">Get Started</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Hero ── -->
+  <section class="home-hero">
+    <!-- Background image layer -->
+    <div class="home-hero-bg">
+      <div class="hero-bg-image"></div>
+      <div class="hero-bg-overlay"></div>
+      <div class="hero-grid"></div>
+      <div class="hero-orb hero-orb-1"></div>
+      <div class="hero-orb hero-orb-2"></div>
+    </div>
+
+    <div class="home-hero-content">
+      <!-- Brand name -->
+      <div class="hero-brand-name">REACT-X</div>
+
+      <div class="hero-tagline">Autonomous Incident Resolution Engine</div>
+
+      <h1 class="hero-title">
+        Resolve incidents<br/>
+        <span class="hero-title-accent">before they escalate</span>
+      </h1>
+
+      <p class="hero-desc">
+        REACT-X is an AI-powered production incident management platform that automatically
+        detects alerts, correlates signals across services, investigates root causes, and guides
+        your team to fast, verified resolution — with OCR screenshot import, live signals, and
+        a full audit trail.
+      </p>
+
+      <div class="hero-cta">
+        <button class="btn-hero-primary" onclick="App.showScreen('signup')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+          Get Started Free
+        </button>
+        <button class="btn-hero-outline" onclick="App.showScreen('login')">
+          Sign In to Dashboard
+        </button>
+      </div>
+      <p class="hero-note">No credit card required &nbsp;·&nbsp; Any email &amp; password to demo</p>
+    </div>
+  </section>
+
+  <!-- ── Features ── -->
+  <section class="home-section" id="features">
+    <div class="home-section-inner">
+      <div class="home-section-label">WHAT REACT-X PROVIDES</div>
+      <h2 class="home-section-title">Everything your on-call team needs</h2>
+      <p class="home-section-sub">
+        From the first alert to full post-mortem — REACT-X handles every step of the incident lifecycle.
+      </p>
+      <div class="features-grid">
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(255,68,68,0.14);color:#ff4444;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </div>
+          <h3>Real-Time Incident Detection</h3>
+          <p>Live signals stream new incidents to your dashboard the moment they are detected — no manual polling needed. Critical alerts trigger instant notifications.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(255,136,0,0.14);color:#ff8800;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+          </div>
+          <h3>AI-Powered Correlation</h3>
+          <p>REACT-X correlates alerts across services using topology, time-series, and semantic signals — collapsing alert storms into a single prioritised incident.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(251,191,36,0.14);color:#fbbf24;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </div>
+          <h3>Deep Root Cause Analysis</h3>
+          <p>Evidence collection, root cause identification, blast radius, impact scoring, and risk assessment — all surfaced automatically with every investigation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(129,140,248,0.14);color:#818cf8;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+          </div>
+          <h3>OCR Screenshot Import</h3>
+          <p>Upload any error screenshot directly. REACT-X extracts the text using OCR, auto-detects severity, and pre-fills the incident form for fast creation.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(90,154,90,0.14);color:#5a9a5a;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </div>
+          <h3>Step-by-Step Resolution</h3>
+          <p>Every incident gets a concrete numbered action plan. Approve the fix, add a resolution note, and REACT-X calculates MTTR and moves it to history automatically.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(185,204,221,0.14);color:#b9ccdd;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          </div>
+          <h3>Live Dashboard &amp; Analytics</h3>
+          <p>KPI cards for open/critical/investigating counts, severity breakdown charts, type distribution, 7-day volume trends — and a high-risk alert notification panel.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(99,102,241,0.14);color:#6366f1;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg>
+          </div>
+          <h3>Full Audit &amp; History</h3>
+          <p>Every resolved incident is logged with MTTR, resolution notes, and timestamps. Full-text search, severity filter, and one-click CSV export for compliance.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon" style="background:rgba(102,0,0,0.22);color:#ff6666;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          </div>
+          <h3>High-Risk Alert Notifications</h3>
+          <p>Critical and high-severity incidents are surfaced in a dedicated notification panel on the dashboard. One click opens the full investigation queue.</p>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ── How it works ── -->
+  <section class="home-section home-section-alt" id="how">
+    <div class="home-section-inner">
+      <div class="home-section-label">HOW IT WORKS</div>
+      <h2 class="home-section-title">The complete incident lifecycle</h2>
+      <p class="home-section-sub">REACT-X follows a closed-loop process — if resolution fails the verification check, the cycle restarts automatically.</p>
+
+      <div class="how-grid">
+
+        <div class="how-card">
+          <div class="how-num">1</div>
+          <div class="how-icon">🔍</div>
+          <h4>Detect</h4>
+          <p>Alerts stream in via live signals, manual entry, or OCR screenshot import. Critical incidents are flagged immediately.</p>
+        </div>
+
+        <div class="how-arrow">→</div>
+
+        <div class="how-card">
+          <div class="how-num">2</div>
+          <div class="how-icon">🔗</div>
+          <h4>Correlate</h4>
+          <p>AI groups related alerts from multiple services into a single incident cluster, eliminating noise and duplicates.</p>
+        </div>
+
+        <div class="how-arrow">→</div>
+
+        <div class="how-card">
+          <div class="how-num">3</div>
+          <div class="how-icon">🧪</div>
+          <h4>Investigate</h4>
+          <p>Evidence is gathered, root cause identified, blast radius mapped, impact scored, and risk assessed automatically.</p>
+        </div>
+
+        <div class="how-arrow how-arrow-break">→</div>
+
+        <div class="how-card">
+          <div class="how-num">4</div>
+          <div class="how-icon">⚖️</div>
+          <h4>Decide</h4>
+          <p>Your team reviews the AI-generated analysis and chooses from a ranked list of resolution actions with risk scores.</p>
+        </div>
+
+        <div class="how-arrow">→</div>
+
+        <div class="how-card">
+          <div class="how-num">5</div>
+          <div class="how-icon">✅</div>
+          <h4>Approve</h4>
+          <p>An authorised team member approves the selected action plan. The step-by-step resolution guide is unlocked.</p>
+        </div>
+
+        <div class="how-arrow">→</div>
+
+        <div class="how-card">
+          <div class="how-num">6</div>
+          <div class="how-icon">⚡</div>
+          <h4>Resolve</h4>
+          <p>Follow the numbered steps, add a resolution note, and mark the incident as complete. MTTR is calculated instantly.</p>
+        </div>
+
+        <div class="how-arrow how-arrow-break">→</div>
+
+        <div class="how-card how-card-check">
+          <div class="how-num">7</div>
+          <div class="how-icon">🔄</div>
+          <h4>Verify</h4>
+          <p>REACT-X checks whether the incident is truly resolved. If it recurs or metrics don't recover, the loop restarts from Step 1.</p>
+        </div>
+
+      </div>
+
+      <div class="how-loop-note">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>
+        If verification fails — the incident is reopened and the full cycle repeats until confirmed resolved.
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Stats ── -->
+  <section class="home-stats-strip" id="stats">
+    <div class="home-section-inner">
+      <div class="stats-row">
+        <div class="stat-item">
+          <div class="stat-val">94%</div>
+          <div class="stat-label">AI Resolution Rate</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <div class="stat-val">1.3m</div>
+          <div class="stat-label">Mean Time to Detect</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <div class="stat-val">68%</div>
+          <div class="stat-label">Faster MTTR vs Manual</div>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat-item">
+          <div class="stat-val">21m</div>
+          <div class="stat-label">Average Resolution Time</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CTA ── -->
+  <section class="home-cta-section">
+    <div class="home-cta-inner">
+      <div class="home-cta-orb"></div>
+      <div class="home-section-label" style="color:rgba(185,204,221,0.6)">GET STARTED TODAY</div>
+      <h2 class="home-cta-title">Your incidents don't wait.<br/>Neither should you.</h2>
+      <p class="home-cta-sub">Join on-call teams using REACT-X to cut incident resolution time by over 60%.</p>
+      <div class="home-cta-btns">
+        <button class="btn-hero-primary" onclick="App.showScreen('signup')">Create Free Account</button>
+        <button class="btn-hero-outline" onclick="App.showScreen('login')">Sign In</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Footer ── -->
+  <footer class="home-footer">
+    <div class="home-section-inner home-footer-inner">
+      <div class="home-footer-brand">
+        <svg width="22" height="22" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="7" fill="#1a1a2e"/>
+          <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>REACT-X</span>
+      </div>
+      <p class="home-footer-copy">
+        © 2026 REACT-X &nbsp;·&nbsp; Autonomous Incident Resolution Engine &nbsp;·&nbsp; Enterprise-grade. Built for on-call teams.
+      </p>
+    </div>
+  </footer>
+
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCREEN: LOGIN
+     ═══════════════════════════════════════════════════════ -->
+<div id="screen-login" class="screen">
+  <div class="auth-wrap">
+    <div class="auth-header">
+      <button class="back-btn" onclick="App.showScreen('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        Back
+      </button>
+      <div class="auth-brand">
+        <svg width="24" height="24" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="8" fill="#1a1a2e"/>
+          <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        REACT-X
+      </div>
+    </div>
+    <h2 class="auth-title">Sign in to your account</h2>
+    <form id="loginForm" class="auth-form" novalidate>
+      <div class="field">
+        <label for="loginEmail">Email address</label>
+        <input type="email" id="loginEmail" class="input" placeholder="you@company.com" autocomplete="email" />
+        <span class="field-error" id="loginEmailError"></span>
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <div class="input-password-wrap">
+          <input type="password" id="loginPassword" class="input" placeholder="••••••••" autocomplete="current-password" />
+          <button type="button" class="show-pw-btn" onclick="App.togglePassword('loginPassword', this)" tabindex="-1" aria-label="Show password">
+            <svg class="eye-show" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-hide" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <span class="field-error" id="loginPasswordError"></span>
+      </div>
+      <span class="field-error" id="loginFormError"></span>
+      <button type="submit" class="btn btn-primary full" id="loginBtn">Sign In</button>
+    </form>
+    <p class="auth-switch">Don't have an account? <a href="#" onclick="App.showScreen('signup')">Create one</a></p>
+    <p class="demo-hint">Demo: use any email + password (min 6 chars)</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCREEN: SIGNUP
+     ═══════════════════════════════════════════════════════ -->
+<div id="screen-signup" class="screen">
+  <div class="auth-wrap">
+    <div class="auth-header">
+      <button class="back-btn" onclick="App.showScreen('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        Back
+      </button>
+      <div class="auth-brand">
+        <svg width="24" height="24" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="8" fill="#1a1a2e"/>
+          <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        REACT-X
+      </div>
+    </div>
+    <h2 class="auth-title">Create your account</h2>
+    <form id="signupForm" class="auth-form" novalidate>
+      <div class="field">
+        <label for="signupName">Full name</label>
+        <input type="text" id="signupName" class="input" placeholder="Jane Smith" autocomplete="name" />
+        <span class="field-error" id="signupNameError"></span>
+      </div>
+      <div class="field">
+        <label for="signupEmail">Work email</label>
+        <input type="email" id="signupEmail" class="input" placeholder="you@company.com" autocomplete="email" />
+        <span class="field-hint" id="signupEmailHint"></span>
+        <span class="field-error" id="signupEmailError"></span>
+      </div>
+      <div class="field">
+        <label for="signupPassword">Password</label>
+        <div class="input-password-wrap">
+          <input type="password" id="signupPassword" class="input" placeholder="At least 6 characters" autocomplete="new-password" />
+          <button type="button" class="show-pw-btn" onclick="App.togglePassword('signupPassword', this)" tabindex="-1" aria-label="Show password">
+            <svg class="eye-show" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-hide" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <span class="field-error" id="signupPasswordError"></span>
+      </div>
+      <div class="field">
+        <label for="signupConfirm">Confirm password</label>
+        <div class="input-password-wrap">
+          <input type="password" id="signupConfirm" class="input" placeholder="Re-enter password" autocomplete="new-password" />
+          <button type="button" class="show-pw-btn" onclick="App.togglePassword('signupConfirm', this)" tabindex="-1" aria-label="Show password">
+            <svg class="eye-show" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-hide" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <span class="field-error" id="signupConfirmError"></span>
+      </div>
+      <span class="field-error" id="signupFormError"></span>
+      <button type="submit" class="btn btn-primary full" id="signupBtn">Create Account</button>
+    </form>
+    <p class="auth-switch">Already have an account? <a href="#" onclick="App.showScreen('login')">Sign in</a></p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCREEN: APP
+     ═══════════════════════════════════════════════════════ -->
+<div id="screen-app" class="screen">
+
+  <!-- TOP NAV -->
+  <header class="topnav">
+    <div class="topnav-left">
+      <div class="nav-brand">
+        <svg width="20" height="20" viewBox="0 0 36 36" fill="none">
+          <rect width="36" height="36" rx="8" fill="#1a1a2e"/>
+          <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        REACT-X
+      </div>
+      <nav class="nav-links">
+        <a href="#" class="nav-link active" data-page="dashboard">Dashboard</a>
+        <a href="#" class="nav-link" data-page="incidents">Incidents</a>
+        <a href="#" class="nav-link" data-page="history">History</a>
+      </nav>
+    </div>
+    <div class="topnav-right">
+      <span class="live-dot" id="liveIndicator" title="Live updates active"></span>
+      <span class="nav-user" id="navUser">—</span>
+      <button class="btn btn-sm btn-ghost" onclick="App.logout()">Sign out</button>
+    </div>
+  </header>
+
+  <!-- PAGE CONTENT -->
+  <main class="app-main">
+
+    <!-- ── DASHBOARD ── -->
+    <section class="page" id="page-dashboard">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-sub" id="dashTimestamp"></p>
+        </div>
+        <button class="btn btn-primary" onclick="Incidents.openNewIncidentModal()">+ New Incident</button>
+      </div>
+
+      <!-- High-Risk Alert Panel (click to view) -->
+      <div id="highRiskPanel" style="display:none;margin-bottom:1rem"></div>
+
+      <!-- KPI row -->
+      <div class="kpi-row" id="kpiRow"></div>
+
+      <!-- Charts row -->
+      <div class="charts-row">
+        <div class="chart-card">
+          <h3 class="chart-title">Incidents by Severity</h3>
+          <div class="chart-wrap"><canvas id="chartSeverity"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-title">Incidents by Type</h3>
+          <div class="chart-wrap"><canvas id="chartType"></canvas></div>
+        </div>
+        <div class="chart-card">
+          <h3 class="chart-title">Daily Volume (last 7 days)</h3>
+          <div class="chart-wrap"><canvas id="chartVolume"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Recent incidents -->
+      <div class="section-card">
+        <div class="section-head">
+          <h3 class="section-title">Active &amp; Recent Incidents</h3>
+          <a href="#" class="link-btn" onclick="App.navigateTo('incidents')">View all →</a>
+        </div>
+        <div id="dashRecentList"></div>
+      </div>
+    </section>
+
+    <!-- ── INCIDENTS ── -->
+    <section class="page" id="page-incidents">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Incidents</h1>
+          <p class="page-sub">All active and open incidents</p>
+        </div>
+        <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap">
+          <div class="export-dropdown" id="incExportDropdown">
+            <button class="btn btn-ghost btn-sm export-toggle" onclick="Incidents.toggleExportMenu()" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Export
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="export-menu" id="incExportMenu" style="display:none">
+              <div class="export-menu-label">Export current filter results</div>
+              <button class="export-menu-item" onclick="Incidents.exportAs('csv')">
+                <span class="export-icon">📄</span>
+                <div>
+                  <div class="export-item-title">CSV</div>
+                  <div class="export-item-sub">Comma-separated, opens in Excel</div>
+                </div>
+              </button>
+              <button class="export-menu-item" onclick="Incidents.exportAs('json')">
+                <span class="export-icon">🗂</span>
+                <div>
+                  <div class="export-item-title">JSON</div>
+                  <div class="export-item-sub">Full data, machine-readable</div>
+                </div>
+              </button>
+              <button class="export-menu-item" onclick="Incidents.exportAs('txt')">
+                <span class="export-icon">📝</span>
+                <div>
+                  <div class="export-item-title">Plain Text</div>
+                  <div class="export-item-sub">Human-readable report</div>
+                </div>
+              </button>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="Incidents.openNewIncidentModal()">+ New Incident</button>
+        </div>
+      </div>
+
+      <!-- Filter bar -->
+      <div class="filter-bar">
+        <input type="text" class="input input-sm" id="incidentSearch" placeholder="Search incidents…" oninput="Incidents.applyFilters()" />
+        <select class="input input-sm" id="incidentSeverityFilter" onchange="Incidents.applyFilters()">
+          <option value="">All severities</option>
+          <option value="Critical">Critical</option>
+          <option value="High">High</option>
+          <option value="Medium">Medium</option>
+          <option value="Low">Low</option>
+        </select>
+        <select class="input input-sm" id="incidentStatusFilter" onchange="Incidents.applyFilters()">
+          <option value="">All statuses</option>
+          <option value="Open">Open</option>
+          <option value="Investigating">Investigating</option>
+          <option value="Resolved">Resolved</option>
+        </select>
+      </div>
+
+      <div id="incidentList"></div>
+    </section>
+
+    <!-- ── HISTORY ── -->
+    <section class="page" id="page-history">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">History</h1>
+          <p class="page-sub">Resolved incidents and post-mortems</p>
+        </div>
+        <button class="btn btn-ghost" onclick="History.exportCSV()">Export CSV</button>
+      </div>
+
+      <div class="filter-bar">
+        <input type="text" class="input input-sm" id="historySearch" placeholder="Search history…" oninput="History.applyFilters()" />
+        <select class="input input-sm" id="historySeverityFilter" onchange="History.applyFilters()">
+          <option value="">All severities</option>
+          <option value="Critical">Critical</option>
+          <option value="High">High</option>
+          <option value="Medium">Medium</option>
+          <option value="Low">Low</option>
+        </select>
+      </div>
+
+      <div id="historyList"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     MODAL: NEW INCIDENT
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-new-incident" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="newIncidentTitle">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="newIncidentTitle">New Incident</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-new-incident')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+
+      <form id="newIncidentForm" novalidate>
+        <div class="form-grid">
+          <div class="field full">
+            <label for="incTitle">Title <span class="required">*</span></label>
+            <input type="text" id="incTitle" class="input" placeholder="e.g. Database CPU High — production-db-01" />
+            <span class="field-error" id="incTitleError"></span>
+          </div>
+          <div class="field">
+            <label for="incSeverity">Severity <span class="required">*</span></label>
+            <select id="incSeverity" class="input">
+              <option value="">Select…</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+            <span class="field-error" id="incSeverityError"></span>
+          </div>
+          <div class="field">
+            <label for="incType">Type</label>
+            <select id="incType" class="input">
+              <option value="Performance">Performance</option>
+              <option value="Availability">Availability</option>
+              <option value="Security">Security</option>
+              <option value="Data">Data</option>
+              <option value="Network">Network</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="incService">Affected service</label>
+            <input type="text" id="incService" class="input" placeholder="e.g. payment-api" />
+          </div>
+          <div class="field">
+            <label for="incEnvironment">Environment</label>
+            <select id="incEnvironment" class="input">
+              <option value="Production">Production</option>
+              <option value="Staging">Staging</option>
+              <option value="Development">Development</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label for="incDescription">Description / error details <span class="required">*</span></label>
+            <textarea id="incDescription" class="input" rows="4" placeholder="Describe what happened, include error messages, metrics…"></textarea>
+            <span class="field-error" id="incDescriptionError"></span>
+          </div>
+
+          <!-- Image upload -->
+          <div class="field full">
+            <label>Attach Screenshot / Image <span class="field-optional">(optional)</span></label>
+            <div class="img-upload-zone" id="imgUploadZone">
+              <input type="file" id="incImageFile" accept="image/*" hidden />
+              <div class="img-upload-placeholder" id="imgPlaceholder">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+                <span>Drag &amp; drop an image or <label for="incImageFile" class="img-browse-link">browse</label></span>
+                <span class="img-upload-hint">PNG, JPG, GIF, WEBP — max 5 MB</span>
+              </div>
+              <div class="img-preview-wrap" id="imgPreviewWrap" style="display:none">
+                <img id="imgPreview" src="" alt="Screenshot preview" class="img-preview" />
+                <div class="img-preview-meta" id="imgPreviewMeta"></div>
+                <button type="button" class="img-remove-btn" onclick="Incidents.removeImage()" title="Remove image">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" onclick="App.closeModal('modal-new-incident')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="createIncidentBtn">Create Incident</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     MODAL: INVESTIGATION
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-investigation" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="investigationTitle">
+  <div class="modal-box modal-wide">
+    <div class="modal-header">
+      <h3 id="investigationTitle">Investigation</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-investigation')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="investigationBody">
+      <!-- filled by investigation.js -->
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     MODAL: KPI DRILL-DOWN
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-kpi" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide">
+    <div class="modal-header">
+      <h3 id="kpiModalTitle">Incidents</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-kpi')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="kpiModalBody"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     MODAL: HIGH-RISK ALERTS
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-high-risk" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide">
+    <div class="modal-header" style="border-left:4px solid #ff4444;">
+      <h3 style="color:#ff4444;">🚨 High-Risk Alerts — Immediate Attention Required</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-high-risk')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="highRiskModalBody">
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     TOAST CONTAINER
+     ═══════════════════════════════════════════════════════ -->
+<div id="toastContainer" aria-live="polite"></div>
+
+<!-- ═══════════════════════════════════════════════════════
+     SCRIPTS (order matters)
+     ═══════════════════════════════════════════════════════ -->
+<script src="js/mock-data.js"></script>
+<script src="js/app.js"></script>
+<script src="js/dashboard.js"></script>
+<script src="js/incidents.js"></script>
+<script src="js/investigation.js"></script>
+<script src="js/history.js"></script>
+
+</body>
+</html>
