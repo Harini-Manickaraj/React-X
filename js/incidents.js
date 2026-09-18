@@ -369,17 +369,83 @@ const Incidents = (() => {
       const user = App.getUser();
       const inc  = Store.createIncident({
         title, severity, type, service, environment, description,
-        createdBy: user ? user.name : 'User'
+        createdBy: user ? user.name : 'User',
+        imageDataUrl: _currentImageDataUrl || null
       });
 
       App.closeModal('modal-new-incident');
+      _resetImage();
       App.toast(`Incident ${inc.id} created`, 'success');
       App.navigateTo('incidents');
       setTimeout(() => Investigation.open(inc.id), 300);
     });
   }
 
-  /* ── Helpers ─────────────────────────────────────────── */
+  /* ── Image Upload ────────────────────────────────────── */
+  function _setupImageUpload() {
+    const zone  = document.getElementById('imgUploadZone');
+    const input = document.getElementById('incImageFile');
+    if (!zone || !input || zone._imgBound) return;
+    zone._imgBound = true;
+
+    // File input change
+    input.addEventListener('change', () => {
+      if (input.files?.[0]) _loadImage(input.files[0]);
+    });
+
+    // Drag & drop
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      zone.classList.add('drag-over');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const file = e.dataTransfer.files?.[0];
+      if (file && file.type.startsWith('image/')) _loadImage(file);
+      else App.toast('Please drop an image file.', 'warning');
+    });
+  }
+
+  function _loadImage(file) {
+    const MAX = 5 * 1024 * 1024; // 5 MB
+    if (file.size > MAX) {
+      App.toast('Image too large — max 5 MB.', 'error');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+      _currentImageDataUrl = e.target.result;
+      // Show preview
+      const preview  = document.getElementById('imgPreview');
+      const wrap     = document.getElementById('imgPreviewWrap');
+      const ph       = document.getElementById('imgPlaceholder');
+      const meta     = document.getElementById('imgPreviewMeta');
+      if (preview)  preview.src = _currentImageDataUrl;
+      if (wrap)     wrap.style.display = 'flex';
+      if (ph)       ph.style.display   = 'none';
+      if (meta)     meta.textContent   = `${file.name}  ·  ${(file.size / 1024).toFixed(0)} KB`;
+      App.toast('Image attached.', 'success', 2500);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function removeImage() {
+    _currentImageDataUrl = null;
+    const input   = document.getElementById('incImageFile');
+    const preview = document.getElementById('imgPreview');
+    const wrap    = document.getElementById('imgPreviewWrap');
+    const ph      = document.getElementById('imgPlaceholder');
+    if (input)   input.value  = '';
+    if (preview) preview.src  = '';
+    if (wrap)    wrap.style.display = 'none';
+    if (ph)      ph.style.display   = 'flex';
+  }
+
+  function _resetImage() {
+    removeImage();
+  }
   function _setField(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
   function _setError(id, m) { const el = document.getElementById(id); if (el) el.textContent = m; }
   function _clearFormErrors() {
@@ -391,7 +457,7 @@ const Incidents = (() => {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  return { init, refresh, applyFilters, openNewIncidentModal, showCompleteBox, hideCompleteBox, submitComplete, toggleExportMenu, exportAs };
+  return { init, refresh, applyFilters, openNewIncidentModal, showCompleteBox, hideCompleteBox, submitComplete, toggleExportMenu, exportAs, removeImage };
 })();
 
 window.Incidents = Incidents;

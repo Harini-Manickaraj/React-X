@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- Tesseract OCR — for dashboard screenshot import -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
@@ -423,7 +425,11 @@
       </nav>
     </div>
     <div class="topnav-right">
-      <span class="live-dot" id="liveIndicator" title="Live updates active"></span>
+      <!-- Live alerts toggle -->
+      <button class="live-toggle-btn" id="liveToggleBtn" onclick="App.toggleLive()" title="Toggle live alerts">
+        <span class="live-dot" id="liveIndicator"></span>
+        <span class="live-toggle-label" id="liveToggleLabel">Live</span>
+      </button>
       <span class="nav-user" id="navUser">—</span>
       <button class="btn btn-sm btn-ghost" onclick="App.logout()">Sign out</button>
     </div>
@@ -441,6 +447,73 @@
         </div>
         <button class="btn btn-primary" onclick="Incidents.openNewIncidentModal()">+ New Incident</button>
       </div>
+
+      <!-- OCR Screenshot Import Banner -->
+      <div class="ocr-dashboard-banner">
+        <div class="ocr-db-left">
+          <div class="ocr-db-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+            </svg>
+          </div>
+          <div class="ocr-db-text">
+            <div class="ocr-db-title">OCR Screenshot Import</div>
+            <div class="ocr-db-desc">Upload any error screenshot directly. REACT-X extracts the text using OCR, auto-detects severity, and pre-fills the incident form for fast creation.</div>
+          </div>
+        </div>
+        <div class="ocr-db-right">
+          <label class="btn btn-sm ocr-db-btn" for="dashOcrFileInput">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+            </svg>
+            Upload Screenshot
+          </label>
+          <input type="file" id="dashOcrFileInput" accept="image/*" hidden />
+          <span class="ocr-db-status" id="dashOcrStatus"></span>
+        </div>
+      </div>
+
+      <!-- CSV Dataset Upload Banner -->
+      <div class="csv-upload-banner" id="csvUploadBanner">
+        <div class="ocr-db-left">
+          <div class="ocr-db-icon" style="background:rgba(90,154,90,0.14);color:#5a9a5a;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+              <polyline points="10 9 9 9 8 9"/>
+            </svg>
+          </div>
+          <div class="ocr-db-text">
+            <div class="ocr-db-title">Import Incidents from CSV</div>
+            <div class="ocr-db-desc">Upload a CSV dataset to bulk-import incidents. Columns: <code class="csv-code">title, severity, type, service, environment, description</code>. Download the template to get started.</div>
+          </div>
+        </div>
+        <div class="ocr-db-right" style="gap:0.6rem">
+          <button class="btn btn-sm btn-ghost" onclick="Dashboard.downloadCsvTemplate()">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Template
+          </button>
+          <label class="btn btn-sm csv-upload-btn" for="dashCsvFileInput">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+              <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+            </svg>
+            Upload CSV
+          </label>
+          <input type="file" id="dashCsvFileInput" accept=".csv,text/csv" hidden />
+          <span class="ocr-db-status" id="csvUploadStatus"></span>
+        </div>
+      </div>
+
+      <!-- CSV Import Result Panel -->
+      <div id="csvResultPanel" style="display:none;margin-bottom:1rem"></div>
 
       <!-- High-Risk Alert Panel (click to view) -->
       <div id="highRiskPanel" style="display:none;margin-bottom:1rem"></div>
@@ -705,6 +778,32 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════
+     MODAL: KPI DRILL-DOWN
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-kpi" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide">
+    <div class="modal-header">
+      <h3 id="kpiModalTitle">Incidents</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-kpi')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="kpiModalBody"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
+     MODAL: HIGH-RISK ALERTS
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-high-risk" class="modal-overlay" role="dialog" aria-modal="true">
+  <div class="modal-box modal-wide">
+    <div class="modal-header" style="border-left:4px solid #ff4444;">
+      <h3 style="color:#ff4444;">🚨 High-Risk Alerts — Immediate Attention Required</h3>
+      <button class="modal-close" onclick="App.closeModal('modal-high-risk')" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="highRiskModalBody"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
      TOAST CONTAINER
      ═══════════════════════════════════════════════════════ -->
 <div id="toastContainer" aria-live="polite"></div>
@@ -713,6 +812,7 @@
      SCRIPTS (order matters)
      ═══════════════════════════════════════════════════════ -->
 <script src="js/mock-data.js"></script>
+<script src="js/api.js"></script>
 <script src="js/app.js"></script>
 <script src="js/dashboard.js"></script>
 <script src="js/incidents.js"></script>

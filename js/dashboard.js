@@ -14,6 +14,8 @@ const Dashboard = (() => {
     _renderKPIs();
     _renderCharts();
     _renderRecentList();
+    _setupDashOCR();
+    _setupCsvUpload();
     if (!_initialized) _initialized = true;
 
     const ts = document.getElementById('dashTimestamp');
@@ -406,11 +408,286 @@ const Dashboard = (() => {
     }).join('');
   }
 
+  /* ── CSV Dataset Import ──────────────────────────────── */
+  function _setupCsvUpload() {
+    const input = document.getElementById('dashCsvFileInput');
+    if (!input || input._csvBound) return;
+    input._csvBound = true;
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      input.value = '';
+      _parseCsvFile(file);
+    });
+  }
+
+  function _parseCsvFile(file) {
+    const status = document.getElementById('csvUploadStatus');
+    const btn    = document.querySelector('.csv-upload-btn');
+    if (status) { status.textContent = 'Reading file…'; status.className = 'ocr-db-status'; }
+    if (btn)    btn.style.opacity = '0.6';
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const text  = e.target.result;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) {
+          _csvError(status, btn, 'CSV must have a header row and at least one data row.');
+          return;
+        }
+
+        // Parse header — normalise to lowercase, trim spaces
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z]/g,''));
+
+        // Required columns check
+        const requiredCols = ['title'];
+        const missing = requiredCols.filter(c => !headers.includes(c));
+        if (missing.length) {
+          _csvError(status, btn, `Missing required column: "${missing.join(', ')}". Download the template to check the format.`);
+          return;
+        }
+
+        const col = c => headers.indexOf(c);
+
+        const validSeverities  = ['Critical','High','Medium','Low'];
+        const validTypes       = ['Performance','Availability','Security','Data','Network','Other'];
+        const validEnvs        = ['Production','Staging','Development'];
+
+        const user     = App.getUser();
+        const created  = [];
+        const skipped  = [];
+        const warnings = [];
+
+        for (let i = 1; i < lines.length; i++) {
+          const row = _splitCsvRow(lines[i]);
+          const raw = {
+            title:       row[col('title')]       || '',
+            severity:    row[col('severity')]     || 'Medium',
+            type:        row[col('type')]         || 'Other',
+            service:     row[col('service')]      || '',
+            environment: row[col('environment')]  || 'Production',
+            description: row[col('description')] || ''
+          };
+
+          if (!raw.title.trim()) { skipped.push(`Row ${i+1}: empty title`); continue; }
+
+          // Normalise severity — case-insensitive match
+          const sev = validSeverities.find(s => s.toLowerCase() === raw.severity.trim().toLowerCase()) || 'Medium';
+          if (sev !== raw.severity.trim()) warnings.push(`Row ${i+1}: severity "${raw.severity}" → "${sev}"`);
+
+          const type = validTypes.find(t => t.toLowerCase() === raw.type.trim().toLowerCase()) || 'Other';
+          const env  = validEnvs.find(v => v.toLowerCase() === raw.environment.trim().toLowerCase()) || 'Production';
+
+          const inc = Store.createIncident({
+            title:       raw.title.trim(),
+            severity:    sev,
+            type,
+            service:     raw.service.trim(),
+            environment: env,
+            description: raw.description.trim() || `Imported from CSV — row ${i+1}`,
+            createdBy:   user ? user.name : 'CSV Import'
+          });
+          created.push(inc);
+        }
+
+        if (btn) btn.style.opacity = '1';
+
+        if (created.length === 0) {
+          _csvError(status, btn, `No valid incidents found. ${skipped.length} rows skipped.`);
+          return;
+        }
+
+        if (status) {
+          status.textContent = `✓ ${created.length} imported`;
+          status.className = 'ocr-db-status success';
+          setTimeout(() => { status.textContent = ''; status.className = 'ocr-db-status'; }, 6000);
+        }
+
+        _showCsvResult(created, skipped, warnings);
+        Dashboard.refresh();
+        App.toast(`CSV imported: ${created.length} incident${created.length!==1?'s':''} created.`, 'success', 5000);
+
+      } catch (err) {
+        _csvError(status, btn, 'Failed to parse CSV. Check the file format and try again.');
+        console.error('CSV parse error:', err);
+      }
+    };
+    reader.onerror = () => _csvError(document.getElementById('csvUploadStatus'), document.querySelector('.csv-upload-btn'), 'Could not read file.');
+    reader.readAsText(file, 'UTF-8');
+  }
+
+  function _splitCsvRow(line) {
+    // Handles quoted fields with commas inside
+    const result = [];
+    let cur = '', inQuote = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQuote = !inQuote; }
+      else if (ch === ',' && !inQuote) { result.push(cur.trim()); cur = ''; }
+      else { cur += ch; }
+    }
+    result.push(cur.trim());
+    return result;
+  }
+
+  function _csvError(status, btn, msg) {
+    if (status) { status.textContent = msg; status.className = 'ocr-db-status error'; }
+    if (btn)    btn.style.opacity = '1';
+    App.toast(msg, 'error', 6000);
+  }
+
+  function _showCsvResult(created, skipped, warnings) {
+    const panel = document.getElementById('csvResultPanel');
+    if (!panel) return;
+    panel.style.display = 'block';
+    panel.innerHTML = `
+      <div class="csv-result-box">
+        <div class="csv-result-header">
+          <div class="csv-result-icon">📂</div>
+          <div>
+            <div class="csv-result-title">CSV Import Complete</div>
+            <div class="csv-result-sub">
+              <span class="csv-stat green">${created.length} created</span>
+              ${skipped.length  ? `<span class="csv-stat red">${skipped.length} skipped</span>`   : ''}
+              ${warnings.length ? `<span class="csv-stat yellow">${warnings.length} corrected</span>` : ''}
+            </div>
+          </div>
+          <button class="csv-result-close" onclick="document.getElementById('csvResultPanel').style.display='none'">×</button>
+        </div>
+
+        <div class="csv-result-table">
+          <div class="csv-result-head">
+            <span>ID</span><span>Title</span><span>Severity</span><span>Type</span><span>Service</span>
+          </div>
+          ${created.slice(0, 10).map(inc => `
+            <div class="csv-result-row" onclick="Investigation.open('${inc.id}')">
+              <span class="csv-id">${_esc(inc.id)}</span>
+              <span class="csv-title">${_esc(inc.title)}</span>
+              <span>${App.severityBadge(inc.severity)}</span>
+              <span class="csv-type">${_esc(inc.type)}</span>
+              <span class="csv-svc">${_esc(inc.service || '—')}</span>
+            </div>`).join('')}
+          ${created.length > 10 ? `<div class="csv-result-more">+ ${created.length - 10} more — go to Incidents page to view all</div>` : ''}
+        </div>
+
+        ${skipped.length ? `
+          <details class="csv-issues">
+            <summary>⚠ ${skipped.length} skipped row${skipped.length!==1?'s':''}</summary>
+            <ul>${skipped.map(s=>`<li>${_esc(s)}</li>`).join('')}</ul>
+          </details>` : ''}
+
+        ${warnings.length ? `
+          <details class="csv-issues">
+            <summary>ℹ ${warnings.length} auto-correction${warnings.length!==1?'s':''}</summary>
+            <ul>${warnings.map(w=>`<li>${_esc(w)}</li>`).join('')}</ul>
+          </details>` : ''}
+      </div>`;
+  }
+
+  function downloadCsvTemplate() {
+    const headers = 'title,severity,type,service,environment,description';
+    const rows = [
+      '"Database CPU High — production-db-01",Critical,Performance,database-primary,Production,"CPU at 95% for 10 mins. Slow queries on payments table."',
+      '"Payment API Timeout — checkout",High,Network,payment-api,Production,"ECONNRESET after 30s. Error rate 38%."',
+      '"Memory Usage High — order-service",High,Performance,order-service,Production,"Memory at 87% of limit. OOM expected in 30 mins."',
+      '"Service Unavailable — auth pods",Medium,Availability,auth-service,Staging,"HTTP 503. CrashLoopBackOff on 2 pods."',
+      '"API Rate Limit — maps service",Low,Network,location-service,Production,"HTTP 429 from maps provider. Non-critical."'
+    ];
+    const csv  = headers + '\n' + rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'react-x-incidents-template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    App.toast('Template downloaded — fill it in and re-upload.', 'info', 4000);
+  }
+  function _setupDashOCR() {
+    const input = document.getElementById('dashOcrFileInput');
+    if (!input || input._ocrBound) return;
+    input._ocrBound = true;
+
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      _runDashOCR(file);
+      input.value = '';
+    });
+  }
+
+  function _runDashOCR(file) {
+    const status = document.getElementById('dashOcrStatus');
+    const btn    = document.querySelector('.ocr-db-btn');
+
+    if (status) { status.textContent = 'Loading OCR…'; status.className = 'ocr-db-status'; }
+    if (btn)    btn.style.opacity = '0.6';
+
+    if (typeof Tesseract === 'undefined') {
+      if (status) { status.textContent = 'OCR library not loaded.'; status.className = 'ocr-db-status error'; }
+      if (btn)    btn.style.opacity = '1';
+      App.toast('Tesseract OCR library is not available. Check your internet connection.', 'error', 5000);
+      return;
+    }
+
+    Tesseract.recognize(file, 'eng', {
+      logger: m => {
+        if (m.status === 'recognizing text' && status)
+          status.textContent = `Extracting… ${Math.round((m.progress || 0) * 100)}%`;
+      }
+    }).then(({ data: { text } }) => {
+      const cleaned = text.replace(/\s+/g, ' ').trim();
+      if (btn) btn.style.opacity = '1';
+
+      if (!cleaned) {
+        if (status) { status.textContent = 'No text found in image.'; status.className = 'ocr-db-status error'; }
+        App.toast('No text could be extracted from that image. Try a clearer screenshot.', 'warning');
+        return;
+      }
+
+      // Auto-detect severity
+      const lower = cleaned.toLowerCase();
+      let severity = 'Low';
+      if      (lower.includes('critical') || lower.includes('fatal') || lower.includes('down'))    severity = 'Critical';
+      else if (lower.includes('error')    || lower.includes('exception') || lower.includes('fail')) severity = 'High';
+      else if (lower.includes('warn')     || lower.includes('slow') || lower.includes('timeout'))  severity = 'Medium';
+
+      if (status) {
+        status.textContent = `✓ ${cleaned.length} chars — opening form…`;
+        status.className = 'ocr-db-status success';
+      }
+
+      // Open the new incident modal, then pre-fill it
+      setTimeout(() => {
+        Incidents.openNewIncidentModal(null, null);
+        setTimeout(() => {
+          const descEl = document.getElementById('incDescription');
+          const sevEl  = document.getElementById('incSeverity');
+          if (descEl) descEl.value = cleaned;
+          if (sevEl)  sevEl.value  = severity;
+          App.toast(`OCR complete — ${cleaned.length} chars extracted. Severity: ${severity}. Review and submit.`, 'success', 6000);
+          setTimeout(() => {
+            if (status) { status.textContent = ''; status.className = 'ocr-db-status'; }
+          }, 5000);
+        }, 250);
+      }, 500);
+    }).catch(err => {
+      console.error('OCR error', err);
+      if (btn) btn.style.opacity = '1';
+      if (status) { status.textContent = 'OCR failed. Try a clearer image.'; status.className = 'ocr-db-status error'; }
+      App.toast('OCR extraction failed. Try a higher-resolution screenshot.', 'error');
+    });
+  }
+
   function _esc(s) {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  return { init, refresh, openHighRiskModal };
+  return { init, refresh, openHighRiskModal, openKpiModal, downloadCsvTemplate };
+
 })();
 
 window.Dashboard = Dashboard;

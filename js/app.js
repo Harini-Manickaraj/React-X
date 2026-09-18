@@ -13,7 +13,46 @@ const App = (() => {
   function init() {
     _setupAuth();
     _setupNav();
-    _restoreSession();
+    // Check if backend is reachable
+    if (typeof API !== 'undefined') {
+      API.checkBackend().then(online => {
+        if (online) {
+          console.log('[REACT-X] ✅ Backend connected at http://localhost:8000');
+          API.connectWs();
+          _setupWsEvents();
+        } else {
+          console.log('[REACT-X] Backend offline — using in-memory store');
+        }
+        _restoreSession();
+      });
+    } else {
+      _restoreSession();
+    }
+  }
+
+  function _setupWsEvents() {
+    API.onWsEvent('live:new', (data) => {
+      // Inject into Store and show banner
+      if (data && data.id) {
+        Store.subscribe && Store._emit && Store._emit('live:new', data);
+        _showLiveBanner(data);
+        if (_currentPage === 'dashboard')  Dashboard.refresh();
+        if (_currentPage === 'incidents')  Incidents.refresh();
+      }
+    });
+    API.onWsEvent('incident:created', () => {
+      if (_currentPage === 'dashboard')  Dashboard.refresh();
+      if (_currentPage === 'incidents')  Incidents.refresh();
+    });
+    API.onWsEvent('incident:updated', () => {
+      if (_currentPage === 'dashboard')  Dashboard.refresh();
+      if (_currentPage === 'incidents')  Incidents.refresh();
+      if (_currentPage === 'history')    History.refresh();
+    });
+    API.onWsEvent('pipeline:completed', (data) => {
+      toast(`AI analysis complete for ${data.incident_id} — confidence: ${(data.confidence*100).toFixed(0)}%`, 'success', 5000);
+      if (_currentPage === 'dashboard')  Dashboard.refresh();
+    });
   }
 
   /* ── Screen routing ────────────────────────────────────── */
@@ -106,6 +145,21 @@ const App = (() => {
         _saveUser(user);
       }
 
+      // Try backend if available
+      if (typeof API !== 'undefined' && API.isOnline()) {
+        API.login(email, password)
+          .then(backendUser => {
+            const merged = { ...user, ...backendUser };
+            localStorage.setItem('rx_last_email', email);
+            _signIn(merged);
+          })
+          .catch(() => {
+            localStorage.setItem('rx_last_email', email);
+            _signIn(user);
+          });
+        return;
+      }
+
       localStorage.setItem('rx_last_email', email);
       _signIn(user);
     });
@@ -142,7 +196,6 @@ const App = (() => {
 
   function _signIn(user) {
     _currentUser = user;
-    // Persist active session
     sessionStorage.setItem('rx_session', JSON.stringify({ name: user.name, email: user.email }));
 
     const navUser = document.getElementById('navUser');
@@ -205,12 +258,38 @@ const App = (() => {
 
   /* ── Live signals ──────────────────────────────────────── */
   function _startLive() {
-    const dot = document.getElementById('liveIndicator');
-    if (dot) dot.classList.add('pulse');
+    const dot   = document.getElementById('liveIndicator');
+    const label = document.getElementById('liveToggleLabel');
+    const btn   = document.getElementById('liveToggleBtn');
+    if (dot)   dot.classList.add('pulse');
+    if (label) label.textContent = 'Live ON';
+    if (btn)   btn.classList.add('live-on');
     Store.unsubscribe(_onStoreEvent);
     Store.subscribe(_onStoreEvent);
     if (_liveInterval) clearInterval(_liveInterval);
     _liveInterval = Store.startLiveSignals();
+  }
+
+  function toggleLive() {
+    const dot   = document.getElementById('liveIndicator');
+    const label = document.getElementById('liveToggleLabel');
+    const btn   = document.getElementById('liveToggleBtn');
+    const isOn  = !!_liveInterval;
+
+    if (isOn) {
+      // Turn OFF
+      clearInterval(_liveInterval);
+      _liveInterval = null;
+      Store.unsubscribe(_onStoreEvent);
+      if (dot)   dot.classList.remove('pulse');
+      if (label) label.textContent = 'Live OFF';
+      if (btn)   btn.classList.remove('live-on');
+      toast('Live alerts paused.', 'info', 3000);
+    } else {
+      // Turn ON
+      _startLive();
+      toast('Live alerts enabled.', 'success', 3000);
+    }
   }
 
   function _onStoreEvent(event, payload) {
@@ -325,7 +404,7 @@ const App = (() => {
 
   return {
     init, showScreen, navigateTo, logout, getUser,
-    openModal, closeModal, toast, togglePassword,
+    openModal, closeModal, toast, togglePassword, toggleLive,
     formatTime, severityBadge, statusBadge
   };
 })();

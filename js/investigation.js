@@ -105,6 +105,14 @@ const Investigation = (() => {
       </div>
       <div style="font-weight:700;font-size:0.97rem;color:#ffffff;margin-bottom:0.65rem">${_esc(inc.title)}</div>
       <div class="inv-summary">${_esc(inc.description)}</div>
+      ${inc.imageDataUrl ? `
+        <div style="margin-top:0.85rem">
+          <div class="inv-section-title" style="margin-bottom:0.45rem">Attached Screenshot</div>
+          <img src="${inc.imageDataUrl}" alt="Incident screenshot"
+               style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border-mid);cursor:pointer;object-fit:contain"
+               onclick="this.style.maxHeight=this.style.maxHeight==='none'?'340px':'none'" title="Click to expand" />
+          <div class="text-xs text-muted" style="margin-top:0.3rem">Click image to expand / collapse</div>
+        </div>` : ''}
     </div>
 
     <!-- ② Key Evidence ────────────────────────────── -->

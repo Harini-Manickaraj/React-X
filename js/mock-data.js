@@ -359,7 +359,7 @@ const Store = (() => {
 
     getById(id) { return _incidents.find(i => i.id === id) || null; },
 
-    createIncident({ title, severity, type, service, environment, description, createdBy }) {
+    createIncident({ title, severity, type, service, environment, description, createdBy, imageDataUrl }) {
       const inc = {
         id: newId(),
         title: title.trim(),
@@ -369,6 +369,7 @@ const Store = (() => {
         service: (service || '').trim(),
         environment: environment || 'Production',
         description: description.trim(),
+        imageDataUrl: imageDataUrl || null,
         createdAt: nowISO(),
         updatedAt: nowISO(),
         createdBy: createdBy || 'User',
