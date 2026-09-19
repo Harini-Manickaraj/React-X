@@ -7,6 +7,7 @@ const Dashboard = (() => {
 
   let _initialized = false;
   let _charts = {};
+  let _lastCsvIncidents = [];   // stored after CSV import for Live Demo
 
   /* ── Init / Refresh ──────────────────────────────────── */
   function init() {
@@ -433,60 +434,116 @@ const Dashboard = (() => {
         const text  = e.target.result;
         const lines = text.split(/\r?\n/).filter(l => l.trim());
         if (lines.length < 2) {
-          _csvError(status, btn, 'CSV must have a header row and at least one data row.');
+          _csvError(status, btn, 'CSV must have at least one header row and one data row.');
           return;
         }
 
-        // Parse header — normalise to lowercase, trim spaces
-        const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z]/g,''));
+        // Parse header — normalise keys for fuzzy matching
+        const rawHeaders = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g,''));
+        const headers    = rawHeaders.map(h => h.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''));
 
-        // Required columns check
-        const requiredCols = ['title'];
-        const missing = requiredCols.filter(c => !headers.includes(c));
-        if (missing.length) {
-          _csvError(status, btn, `Missing required column: "${missing.join(', ')}". Download the template to check the format.`);
-          return;
-        }
+        // ── Fuzzy column mapping — works with ANY column names ──
+        // For each field we try an ordered list of candidate names
+        const _findCol = (candidates) => {
+          for (const c of candidates) {
+            const idx = headers.findIndex(h => h.includes(c) || c.includes(h));
+            if (idx !== -1) return idx;
+          }
+          return -1;
+        };
 
-        const col = c => headers.indexOf(c);
+        const colMap = {
+          title:       _findCol(['title','name','incident','summary','subject','alert','event','headline','issue','problem']),
+          severity:    _findCol(['severity','sev','priority','level','criticality','urgency','impact_level']),
+          type:        _findCol(['type','category','kind','class','incident_type','error_type','failure_type']),
+          service:     _findCol(['service','svc','component','system','app','application','host','source','target','affected']),
+          environment: _findCol(['environment','env','stage','region','zone','cluster','namespace','deployment_env']),
+          description: _findCol(['description','desc','details','message','msg','body','text','notes','error','log','content','info','detail']),
+        };
 
-        const validSeverities  = ['Critical','High','Medium','Low'];
-        const validTypes       = ['Performance','Availability','Security','Data','Network','Other'];
-        const validEnvs        = ['Production','Staging','Development'];
+        // If no title column found, use first column as title
+        if (colMap.title === -1) colMap.title = 0;
 
-        const user     = App.getUser();
-        const created  = [];
-        const skipped  = [];
-        const warnings = [];
+        // Collect all column values not mapped — concatenate as extra description context
+        const mappedCols = new Set(Object.values(colMap).filter(v => v !== -1));
+
+        const validSeverities = ['Critical','High','Medium','Low'];
+        const validTypes      = ['Performance','Availability','Security','Data','Network','Other'];
+        const validEnvs       = ['Production','Staging','Development'];
+
+        // Severity inference from free text
+        const _inferSeverity = (txt) => {
+          const t = (txt || '').toLowerCase();
+          if (/critical|fatal|p0|sev[- ]?1|down|outage/.test(t))       return 'Critical';
+          if (/high|error|fail|crash|p1|sev[- ]?2|urgent/.test(t))     return 'High';
+          if (/medium|warn|degraded|slow|p2|sev[- ]?3/.test(t))        return 'Medium';
+          return 'Low';
+        };
+
+        // Type inference from free text
+        const _inferType = (txt) => {
+          const t = (txt || '').toLowerCase();
+          if (/cpu|memory|oom|slow|latency|queue|throughput/.test(t))   return 'Performance';
+          if (/down|unavailable|503|crash|restart|pod/.test(t))         return 'Availability';
+          if (/timeout|connection|network|dns|gateway|retry/.test(t))  return 'Network';
+          if (/replica|replication|stale|data|db|sql|mongo/.test(t))   return 'Data';
+          if (/breach|attack|auth|unauthori|credential/.test(t))       return 'Security';
+          return 'Other';
+        };
+
+        const user    = App.getUser();
+        const created = [];
+        const skipped = [];
+        const warnings= [];
 
         for (let i = 1; i < lines.length; i++) {
           const row = _splitCsvRow(lines[i]);
-          const raw = {
-            title:       row[col('title')]       || '',
-            severity:    row[col('severity')]     || 'Medium',
-            type:        row[col('type')]         || 'Other',
-            service:     row[col('service')]      || '',
-            environment: row[col('environment')]  || 'Production',
-            description: row[col('description')] || ''
-          };
+          if (!row.length || row.every(c => !c.trim())) continue;
 
-          if (!raw.title.trim()) { skipped.push(`Row ${i+1}: empty title`); continue; }
+          const get = idx => (idx !== -1 && row[idx] !== undefined) ? row[idx].trim().replace(/^["']|["']$/g,'') : '';
 
-          // Normalise severity — case-insensitive match
-          const sev = validSeverities.find(s => s.toLowerCase() === raw.severity.trim().toLowerCase()) || 'Medium';
-          if (sev !== raw.severity.trim()) warnings.push(`Row ${i+1}: severity "${raw.severity}" → "${sev}"`);
+          // Build extra context from unmapped columns
+          const extraParts = [];
+          row.forEach((val, idx) => {
+            if (!mappedCols.has(idx) && val.trim()) {
+              extraParts.push(`${rawHeaders[idx] || idx}: ${val.trim()}`);
+            }
+          });
 
-          const type = validTypes.find(t => t.toLowerCase() === raw.type.trim().toLowerCase()) || 'Other';
-          const env  = validEnvs.find(v => v.toLowerCase() === raw.environment.trim().toLowerCase()) || 'Production';
+          const titleRaw = get(colMap.title);
+          if (!titleRaw) { skipped.push(`Row ${i+1}: no title found`); continue; }
+
+          // Severity: use column if present, else infer from title+description+extra
+          const sevRaw  = get(colMap.severity);
+          const allText = [titleRaw, get(colMap.description), ...extraParts].join(' ');
+          let sev = sevRaw
+            ? (validSeverities.find(s => s.toLowerCase() === sevRaw.toLowerCase()) || _inferSeverity(sevRaw))
+            : _inferSeverity(allText);
+
+          // Type: use column if present, else infer
+          const typeRaw = get(colMap.type);
+          let incType = typeRaw
+            ? (validTypes.find(t => t.toLowerCase() === typeRaw.toLowerCase()) || _inferType(allText))
+            : _inferType(allText);
+
+          // Environment
+          const envRaw = get(colMap.environment);
+          const env    = envRaw
+            ? (validEnvs.find(v => v.toLowerCase() === envRaw.toLowerCase()) || 'Production')
+            : 'Production';
+
+          // Description: primary column + any extra unmapped columns
+          const descBase  = get(colMap.description);
+          const descFull  = [descBase, ...extraParts].filter(Boolean).join(' | ') || `Imported from CSV row ${i+1}`;
 
           const inc = Store.createIncident({
-            title:       raw.title.trim(),
+            title:       titleRaw,
             severity:    sev,
-            type,
-            service:     raw.service.trim(),
+            type:        incType,
+            service:     get(colMap.service),
             environment: env,
-            description: raw.description.trim() || `Imported from CSV — row ${i+1}`,
-            createdBy:   user ? user.name : 'CSV Import'
+            description: descFull,
+            createdBy:   user ? user.name : 'CSV Import',
           });
           created.push(inc);
         }
@@ -494,7 +551,7 @@ const Dashboard = (() => {
         if (btn) btn.style.opacity = '1';
 
         if (created.length === 0) {
-          _csvError(status, btn, `No valid incidents found. ${skipped.length} rows skipped.`);
+          _csvError(status, btn, `No valid rows found in the CSV. Check the file has at least one data row.`);
           return;
         }
 
@@ -505,11 +562,20 @@ const Dashboard = (() => {
         }
 
         _showCsvResult(created, skipped, warnings);
+        _lastCsvIncidents = created.map(inc => ({
+          id:          inc.id,
+          title:       inc.title,
+          severity:    inc.severity,
+          type:        inc.type,
+          service:     inc.service || '',
+          environment: inc.environment || 'Production',
+          description: inc.description || '',
+        }));
         Dashboard.refresh();
         App.toast(`CSV imported: ${created.length} incident${created.length!==1?'s':''} created.`, 'success', 5000);
 
       } catch (err) {
-        _csvError(status, btn, 'Failed to parse CSV. Check the file format and try again.');
+        _csvError(status, btn, 'Failed to parse CSV. Ensure the file is a valid comma-separated text file.');
         console.error('CSV parse error:', err);
       }
     };
@@ -582,6 +648,18 @@ const Dashboard = (() => {
             <summary>ℹ ${warnings.length} auto-correction${warnings.length!==1?'s':''}</summary>
             <ul>${warnings.map(w=>`<li>${_esc(w)}</li>`).join('')}</ul>
           </details>` : ''}
+
+        <!-- Live Demo launch button -->
+        <div class="csv-demo-launch">
+          <div class="csv-demo-launch-info">
+            <span class="csv-demo-dot"></span>
+            <span><strong>${created.length} incident${created.length!==1?'s':''}</strong> ready for live simulation</span>
+          </div>
+          <button class="btn btn-primary csv-demo-btn" onclick="Dashboard._launchLiveDemo()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            ▶ Run Live Demo
+          </button>
+        </div>
       </div>`;
   }
 
@@ -686,7 +764,18 @@ const Dashboard = (() => {
     return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  return { init, refresh, openHighRiskModal, openKpiModal, downloadCsvTemplate };
+  /* ── Live Demo launcher ──────────────────────────────── */
+  function _launchLiveDemo() {
+    if (typeof LiveDemo === 'undefined') {
+      App.toast('Live Demo module not loaded.', 'error'); return;
+    }
+    if (!_lastCsvIncidents || _lastCsvIncidents.length === 0) {
+      App.toast('Upload a CSV first to run the Live Demo.', 'warning'); return;
+    }
+    LiveDemo.launch(_lastCsvIncidents);
+  }
+
+  return { init, refresh, openHighRiskModal, openKpiModal, downloadCsvTemplate, _launchLiveDemo };
 
 })();
 

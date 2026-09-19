@@ -488,18 +488,10 @@
           </div>
           <div class="ocr-db-text">
             <div class="ocr-db-title">Import Incidents from CSV</div>
-            <div class="ocr-db-desc">Upload a CSV dataset to bulk-import incidents. Columns: <code class="csv-code">title, severity, type, service, environment, description</code>. Download the template to get started.</div>
+            <div class="ocr-db-desc">Upload any CSV file — any columns, any rows. REACT-X auto-detects fields and maps them to incidents for live demo and analysis.</div>
           </div>
         </div>
         <div class="ocr-db-right" style="gap:0.6rem">
-          <button class="btn btn-sm btn-ghost" onclick="Dashboard.downloadCsvTemplate()">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Template
-          </button>
           <label class="btn btn-sm csv-upload-btn" for="dashCsvFileInput">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
@@ -804,6 +796,127 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════
+     MODAL: LIVE DEMO
+     ═══════════════════════════════════════════════════════ -->
+<div id="modal-live-demo" class="modal-overlay demo-overlay" role="dialog" aria-modal="true">
+  <div class="demo-shell">
+
+    <!-- Demo header -->
+    <div class="demo-header">
+      <div class="demo-header-left">
+        <div class="demo-logo">
+          <svg width="22" height="22" viewBox="0 0 36 36" fill="none">
+            <rect width="36" height="36" rx="8" fill="#1a1a2e"/>
+            <path d="M10 18h4l3-7 4 14 3-9 2 2h4" stroke="#818cf8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>REACT-X</span>
+        </div>
+        <span class="demo-mode-badge">LIVE DEMO</span>
+        <span class="demo-stage-label" id="demoStageLabel">Ready</span>
+      </div>
+      <div class="demo-controls">
+        <button class="demo-ctrl-btn" id="demoBtnRestart" onclick="LiveDemo.restart()" title="Restart">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.5"/></svg>
+        </button>
+        <button class="demo-ctrl-btn" id="demoBtnPrev" onclick="LiveDemo.prev()" title="Previous step">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button class="demo-ctrl-btn demo-ctrl-primary" id="demoBtnPlay" onclick="LiveDemo.togglePlay()" title="Play / Pause">
+          <svg id="demoIconPlay" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          <svg id="demoIconPause" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          <span id="demoBtnPlayLabel">Play</span>
+        </button>
+        <button class="demo-ctrl-btn" id="demoBtnNext" onclick="LiveDemo.next()" title="Next step">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button class="demo-ctrl-btn demo-ctrl-close" onclick="LiveDemo.close()" title="Close demo">×</button>
+      </div>
+    </div>
+
+    <!-- Stage progress bar -->
+    <div class="demo-progress-track">
+      <div class="demo-progress-fill" id="demoProgressFill"></div>
+      <div class="demo-stage-dots" id="demoDots"></div>
+    </div>
+
+    <!-- Pipeline stage banner -->
+    <div class="demo-pipeline-banner" id="demoPipelineBanner"></div>
+
+    <!-- Demo body: 3-column layout -->
+    <div class="demo-body">
+
+      <!-- LEFT: alert stream + correlation -->
+      <div class="demo-col demo-col-alerts">
+        <div class="demo-panel-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          Alert Stream
+        </div>
+        <div class="demo-alert-feed" id="demoAlertFeed"></div>
+
+        <div class="demo-panel-title demo-panel-title-mt">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          Correlation Cluster
+        </div>
+        <div class="demo-cluster-box" id="demoClusterBox">
+          <div class="demo-empty-hint">Waiting for alerts…</div>
+        </div>
+      </div>
+
+      <!-- CENTRE: AI analysis panel -->
+      <div class="demo-col demo-col-analysis">
+        <div class="demo-panel-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          AI Analysis
+        </div>
+        <div class="demo-analysis-card" id="demoAnalysisCard">
+          <div class="demo-analysis-waiting">
+            <div class="demo-waiting-spinner"></div>
+            <p>Upload a CSV and press Play to begin</p>
+          </div>
+        </div>
+
+        <!-- SHAP factors -->
+        <div class="demo-panel-title demo-panel-title-mt" id="demoShapTitle" style="display:none">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          SHAP Factors (Why this root cause?)
+        </div>
+        <div class="demo-shap-list" id="demoShapList"></div>
+      </div>
+
+      <!-- RIGHT: blast radius + remediation + resolution log -->
+      <div class="demo-col demo-col-remediation">
+        <div class="demo-panel-title">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Blast Radius
+        </div>
+        <div class="demo-blast-list" id="demoBlastList">
+          <div class="demo-empty-hint">Analysing impact…</div>
+        </div>
+
+        <div class="demo-panel-title demo-panel-title-mt" id="demoRemTitle" style="display:none">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          Remediation Steps
+        </div>
+        <div class="demo-remediation-list" id="demoRemList"></div>
+
+        <div class="demo-panel-title demo-panel-title-mt" id="demoLogTitle">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16"/><path d="M20 8v14a2 2 0 0 1-2 2H8"/><polyline points="14 2 14 8 20 8"/></svg>
+          Resolution Log
+        </div>
+        <div class="demo-log" id="demoLog"></div>
+      </div>
+    </div>
+
+    <!-- Bottom: KPI status bar + summary -->
+    <div class="demo-statusbar" id="demoStatusBar">
+      <div class="demo-kpi-strip" id="demoKpiStrip"></div>
+      <div class="demo-summary-box" id="demoSummaryBox" style="display:none"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════
      TOAST CONTAINER
      ═══════════════════════════════════════════════════════ -->
 <div id="toastContainer" aria-live="polite"></div>
@@ -818,6 +931,7 @@
 <script src="js/incidents.js"></script>
 <script src="js/investigation.js"></script>
 <script src="js/history.js"></script>
+<script src="js/demo.js"></script>
 
 </body>
 </html>
