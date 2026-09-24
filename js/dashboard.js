@@ -1,782 +1,700 @@
 /* ================================================================
-   REACT-X — dashboard.js
-   Clean dashboard: high-risk panel, KPIs, charts, recent list
+   dashboard.js  —  REACT-X  v4
+   CSV import: accepts ANY columns/rows, auto-detects fields and
+   severity, creates real incidents (NOT demo incidents), runs the
+   full risk-based pipeline, shows a result panel.
    ================================================================ */
-
 const Dashboard = (() => {
 
-  let _initialized = false;
   let _charts = {};
-  let _lastCsvIncidents = [];   // stored after CSV import for Live Demo
+  let _importing = false;  // true while CSV/ORC import pipeline is running
 
-  /* ── Init / Refresh ──────────────────────────────────── */
-  function init() {
-    _renderHighRiskPanel();
-    _renderKPIs();
-    _renderCharts();
-    _renderRecentList();
-    _setupDashOCR();
-    _setupCsvUpload();
-    if (!_initialized) _initialized = true;
-
-    const ts = document.getElementById('dashTimestamp');
-    if (ts) ts.textContent = `Updated ${new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})}`;
-  }
-
+  /* ── Public ─────────────────────────────────────────────────── */
   function refresh() {
-    const page = document.getElementById('page-dashboard');
-    if (!page || !page.classList.contains('active')) return;
-    _renderHighRiskPanel();
+    // Skip full refresh during active import to avoid overwriting status UI
+    // and repeatedly destroying/recreating charts
+    if (_importing) {
+      _renderKPIs();
+      _renderHighRiskPanel();
+      _renderApprovalPanel();
+      return;
+    }
+    _renderTimestamp();
     _renderKPIs();
+    _renderHighRiskPanel();
+    _renderApprovalPanel();
     _renderRecentList();
-    _rebuildCharts();
+    _renderCharts();
+    // Always try to init — guarded by input._bound flag
+    _initOCR();
+    _initCSV();
   }
 
-  /* ── High-Risk Alert Panel ───────────────────────────── */
+  /* Lightweight refresh — only KPIs, no charts redraw */
+  function refreshKPIsOnly() {
+    _renderKPIs();
+    _renderHighRiskPanel();
+    _renderApprovalPanel();
+  }
+
+  /* ── Timestamp ───────────────────────────────────────────────── */
+  function _renderTimestamp() {
+    const el = document.getElementById('dashTimestamp');
+    if (el) el.textContent = 'Last updated ' +
+      new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  }
+
+  /* ── KPI Cards ───────────────────────────────────────────────── */
+  function _renderKPIs() {
+    const all      = Store.getAll();
+    const open     = all.filter(i => i.status === 'Open').length;
+    const inv      = all.filter(i => i.status === 'Investigating').length;
+    const critical = all.filter(i =>
+      (i.severity === 'Critical' || i.severity === 'High') && i.status !== 'Resolved').length;
+    const resolved = all.filter(i => i.status === 'Resolved').length;
+
+    const row = document.getElementById('kpiRow');
+    if (!row) return;
+    row.innerHTML = `
+      ${_kpiCard('Open Incidents',  open,     'Needs attention',           '',                     'open')}
+      ${_kpiCard('Investigating',   inv,      'AI pipeline running',       '',                     'investigating')}
+      ${_kpiCard('Critical / High', critical, 'Immediate action required', critical>0?'kpi-critical':'', 'critical')}
+      ${_kpiCard('Resolved',        resolved, 'Successfully closed',       '',                     'resolved')}`;
+    row.querySelectorAll('.kpi-card').forEach(c =>
+      c.addEventListener('click', () => openKpiModal(c.dataset.filter)));
+  }
+
+  function _kpiCard(label, value, sub, valClass, filter) {
+    return `<div class="kpi-card" data-filter="${filter}" title="Click to drill down">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-value ${valClass}">${value}</div>
+      <div class="kpi-sub">${sub}</div>
+    </div>`;
+  }
+
+  /* ── High-Risk Panel ─────────────────────────────────────────── */
   function _renderHighRiskPanel() {
     const panel = document.getElementById('highRiskPanel');
     if (!panel) return;
+    const crit = Store.getCritical();
+    if (!crit.length) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    panel.innerHTML = `
+      <div class="alert-panel alert-panel-critical" onclick="Dashboard.openHighRiskModal()">
+        <div>
+          <div class="panel-heading">
+            🚨 ${crit.length} Critical/High incident${crit.length > 1 ? 's' : ''} need immediate attention
+          </div>
+          <div class="panel-sub">${crit.slice(0, 2).map(i => _e(i.title)).join(' · ')}
+            ${crit.length > 2 ? ` · +${crit.length - 2} more` : ''}</div>
+        </div>
+        <button class="btn btn-danger btn-sm">View All →</button>
+      </div>`;
+  }
 
-    const highRisk = Store.getAll().filter(i =>
-      i.status !== 'Resolved' && (i.severity === 'Critical' || i.severity === 'High')
-    );
+  /* ── Approval Panel ──────────────────────────────────────────── */
+  function _renderApprovalPanel() {
+    const panel = document.getElementById('approvalPanel');
+    if (!panel) return;
+    if (!Config.get('approvalAlerts')) { panel.style.display = 'none'; return; }
 
-    if (highRisk.length === 0) {
-      panel.style.display = 'none';
+    const items = [];
+    Store.getAll().filter(i => i.status !== 'Resolved').forEach(inc => {
+      (inc._rca?.actions || []).forEach(act => {
+        if (act.status === 'awaiting_approval') items.push({ inc, act });
+      });
+    });
+
+    if (!items.length) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    panel.innerHTML = `
+      <div class="section-card" style="border-color:var(--risk-high-border);">
+        <div class="section-head" style="background:var(--risk-high-bg);">
+          <div class="section-title" style="color:var(--risk-high);">⚠ Human Approval Required</div>
+          <span style="font-size:0.78rem;color:var(--risk-high);">${items.length} action${items.length > 1 ? 's' : ''} waiting</span>
+        </div>
+        ${items.slice(0, 4).map(({ inc, act }) => `
+          <div class="incident-item" style="padding:0.7rem 1rem;">
+            <div class="inc-left">
+              <div class="inc-title">${_e(inc.title)}</div>
+              <div class="inc-meta">
+                ${Store.severityBadge(inc.severity)}
+                <span>Action: <strong>${_e(act.name)}</strong></span>
+                ${Store.riskBadge(act.risk_level)}
+              </div>
+            </div>
+            <div class="inc-actions">
+              <button class="btn btn-primary btn-sm" onclick="Investigation.open('${inc.id}')">Review &amp; Approve</button>
+            </div>
+          </div>`).join('')}
+        ${items.length > 4 ? `<div style="padding:0.5rem 1rem;font-size:0.78rem;color:var(--text-muted);">
+          +${items.length - 4} more — check Incidents page</div>` : ''}
+      </div>`;
+  }
+
+  /* ── Recent list ─────────────────────────────────────────────── */
+  function _renderRecentList() {
+    const container = document.getElementById('dashRecentList');
+    if (!container) return;
+    const incidents = Store.getOpen().slice(0, 8);
+    if (!incidents.length) {
+      container.innerHTML = `<div class="empty-state">
+        <div class="empty-state-icon">✅</div>
+        <h4>No open incidents</h4><p>Everything looks healthy.</p></div>`;
+      return;
+    }
+    container.innerHTML = incidents.map(inc => `
+      <div class="incident-item">
+        <div class="inc-left">
+          <div class="inc-title">${_e(inc.title)}</div>
+          <div class="inc-meta">
+            ${Store.severityBadge(inc.severity)}
+            ${Store.statusBadge(inc.status)}
+            <span class="sep">·</span><span>${_e(inc.service || '—')}</span>
+            <span class="sep">·</span><span>${Store.relativeTime(inc.created_at)}</span>
+          </div>
+        </div>
+        <div class="inc-actions">
+          <button class="btn btn-ghost btn-sm" onclick="Investigation.open('${inc.id}')">Investigate</button>
+        </div>
+      </div>`).join('');
+  }
+
+  /* ── Charts ──────────────────────────────────────────────────── */
+  function _renderCharts() { _chartSeverity(); _chartType(); _chartVolume(); }
+
+  function _chartSeverity() {
+    const all = Store.getAll();
+    const ctx = document.getElementById('chartSeverity');
+    if (!ctx) return;
+    if (_charts.severity) _charts.severity.destroy();
+    _charts.severity = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['Critical', 'High', 'Medium', 'Low'],
+        datasets: [{
+          data: ['Critical', 'High', 'Medium', 'Low'].map(s => all.filter(i => i.severity === s).length),
+          backgroundColor: ['#ae0d19', '#c62828', '#d4a800', '#2e7d32'],
+          borderRadius: 6, borderSkipped: false
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 11, family: 'DM Sans' }, color: '#374151' } },
+          y: { grid: { color: '#f3f4f6' }, ticks: { font: { size: 11, family: 'DM Sans' }, color: '#374151', stepSize: 1 }, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  function _chartType() {
+    const all   = Store.getAll();
+    const types = ['Performance', 'Availability', 'Security', 'Data', 'Network', 'Other'];
+    const ctx   = document.getElementById('chartType');
+    if (!ctx) return;
+    if (_charts.type) _charts.type.destroy();
+    _charts.type = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: types,
+        datasets: [{ data: types.map(t => all.filter(i => i.type === t).length),
+          backgroundColor: ['#ae0d19', '#c62828', '#e65100', '#d4a800', '#2e7d32', '#6b7280'],
+          borderWidth: 2, borderColor: '#fff' }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '60%',
+        plugins: { legend: { position: 'bottom',
+          labels: { font: { size: 11, family: 'DM Sans' }, color: '#374151', padding: 8, boxWidth: 12 } } }
+      }
+    });
+  }
+
+  function _chartVolume() {
+    const all = Store.getAll();
+    const labels = [], data = [];
+    for (let d = 6; d >= 0; d--) {
+      const day = new Date(); day.setDate(day.getDate() - d);
+      labels.push(day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+      const s = new Date(day); s.setHours(0, 0, 0, 0);
+      const ex = new Date(day); ex.setHours(23, 59, 59, 999);
+      data.push(all.filter(i => { const c = new Date(i.created_at); return c >= s && c <= ex; }).length);
+    }
+    const ctx = document.getElementById('chartVolume');
+    if (!ctx) return;
+    if (_charts.volume) _charts.volume.destroy();
+    _charts.volume = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{ data, borderColor: '#ae0d19', backgroundColor: 'rgba(174,13,25,0.08)',
+        tension: 0.35, fill: true, pointBackgroundColor: '#ae0d19', pointRadius: 4, pointHoverRadius: 6 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10, family: 'DM Sans' }, color: '#374151' } },
+          y: { grid: { color: '#f3f4f6' }, ticks: { font: { size: 11, family: 'DM Sans' }, color: '#374151', stepSize: 1 }, beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  /* ── OCR import ──────────────────────────────────────────────── */
+  function _initOCR() {
+    const input = document.getElementById('dashOcrFileInput');
+    if (!input || input._bound) return;
+    input._bound = true;
+    input.addEventListener('change', async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const status = document.getElementById('dashOcrStatus');
+      status.innerHTML = '<span class="spinner"></span> Reading screenshot…';
+      try {
+        const result = await Tesseract.recognize(file, 'eng', { logger: () => {} });
+        const text = result.data.text || '';
+        const sev = _detectSeverityFromText(text);
+        Incidents.openNewIncidentModal({
+          title: text.split('\n')[0].trim().slice(0, 80),
+          description: text.slice(0, 400), severity: sev
+        });
+        status.innerHTML = `<span style="color:var(--risk-low)">✓ OCR complete — ${sev} severity detected, form pre-filled</span>`;
+        input.value = '';
+        setTimeout(() => { status.textContent = ''; }, 5000);
+      } catch (err) {
+        status.innerHTML = `<span style="color:var(--risk-high)">OCR failed: ${err.message}</span>`;
+      }
+    });
+  }
+
+  /* ── CSV / ORC Import ────────────────────────────────────────── */
+  function _initCSV() {
+    const input = document.getElementById('dashCsvFileInput');
+    if (!input || input._bound) return;
+    input._bound = true;
+    input.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const status = document.getElementById('csvUploadStatus');
+      const isORC  = file.name.toLowerCase().endsWith('.orc');
+
+      status.innerHTML = `<span class="spinner"></span> ${isORC ? 'Reading ORC file…' : 'Reading CSV…'}`;
+
+      if (isORC) {
+        // ORC is a binary columnar format — read as ArrayBuffer and extract text
+        const reader = new FileReader();
+        reader.onload = async ev => {
+          try {
+            const text = _extractTextFromBinary(ev.target.result);
+            await _processImportedText(text, status, input, 'ORC');
+          } catch (err) {
+            _importing = false;
+            status.innerHTML = `<span style="color:var(--risk-high)">ORC import failed: ${err.message}</span>`;
+            console.error('ORC import error:', err);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        const reader = new FileReader();
+        reader.onload = async ev => {
+          try {
+            await _processImportedText(ev.target.result, status, input, 'CSV');
+          } catch (err) {
+            _importing = false;
+            status.innerHTML = `<span style="color:var(--risk-high)">Import failed: ${err.message}</span>`;
+            console.error('CSV import error:', err);
+          }
+        };
+        reader.readAsText(file);
+      }
+    });
+  }
+
+  /* Extract readable text strings from an ORC binary ArrayBuffer.
+     ORC stores string data as UTF-8 byte sequences inside the binary.
+     We scan for printable ASCII/UTF-8 runs of 4+ chars and join them.
+     If the result looks like JSON or CSV we parse it; otherwise we
+     treat each line as a title. */
+  function _extractTextFromBinary(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const strings = [];
+    let cur = '';
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      // Accept printable ASCII (0x20–0x7E), tab (0x09), newline (0x0A/0x0D)
+      if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d) {
+        cur += String.fromCharCode(b);
+      } else {
+        if (cur.trim().length >= 4) strings.push(cur.trim());
+        cur = '';
+      }
+    }
+    if (cur.trim().length >= 4) strings.push(cur.trim());
+    return strings.join('\n');
+  }
+
+  /* Shared pipeline for both CSV and ORC text once decoded */
+  async function _processImportedText(text, status, input, label) {
+    // Try JSON array first (some ORC exporters produce JSON)
+    let rows = null;
+    const trimmed = text.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed.startsWith('{') ? '[' + trimmed + ']' : trimmed);
+        if (Array.isArray(parsed) && parsed.length) rows = parsed;
+      } catch (_) { /* not valid JSON — fall through to CSV */ }
+    }
+    if (!rows) rows = _parseCSV(text);
+
+    if (!rows.length) {
+      _importing = false;
+      status.innerHTML = `<span style="color:var(--risk-high)">No data rows found in ${label} file.</span>`;
       return;
     }
 
+    const incidents = _smartMapRows(rows);
+    if (!incidents.length) {
+      _importing = false;
+      status.innerHTML = `<span style="color:var(--risk-high)">Could not detect any incident data.</span>`;
+      return;
+    }
+
+    status.innerHTML = `<span class="spinner"></span> Creating ${incidents.length} incident${incidents.length > 1 ? 's' : ''}…`;
+    input.value = '';
+
+    // Add all to store immediately so they appear in the list
+    _importing = true;
+    const added = incidents.map(inc => Store.add(inc));
+    refresh();
+
+    let autoExec = 0, needApproval = 0, autoResolved = 0;
+
+    for (let i = 0; i < added.length; i++) {
+      await _delay(60 * i);
+      const inc = added[i];
+      const rca = Store.getRCA(inc.id);
+      inc._rca  = rca;
+      Store.update(inc.id, { status: 'Investigating' });
+
+      for (let j = 0; j < rca.actions.length; j++) {
+        const act = rca.actions[j];
+        if (Config.shouldAutoExecute(act.risk_level)) {
+          const result = Store.executeAction(act);
+          rca.actions[j] = result;
+          autoExec++;
+        } else {
+          rca.actions[j].status = 'awaiting_approval';
+          needApproval++;
+        }
+      }
+
+      const wasResolved = Store.tryAutoResolve(inc.id);
+      if (wasResolved) autoResolved++;
+    }
+
+    _importing = false;
+    refresh();
+    _showCSVResultPanel(added.length, autoExec, autoResolved, needApproval, added);
+
+    const summary = `✓ ${added.length} imported — ${autoExec} actions executed, ${autoResolved} resolved, ${needApproval} await approval`;
+    status.innerHTML = `<span style="color:var(--risk-low)">${summary}</span>`;
+    App.toast(summary, 'success');
+    setTimeout(() => { status.textContent = ''; }, 8000);
+  }
+
+  /* Smart column mapper — no fixed column names required */
+  function _smartMapRows(rows) {
+    if (!rows.length) return [];
+    const sample = rows[0];
+    const keys   = Object.keys(sample);
+
+    // Helper: find the first key whose name contains any of the candidates
+    const find = (...candidates) =>
+      keys.find(k => candidates.some(c => k.includes(c))) || null;
+
+    const titleKey   = find('title','name','incident','summary','subject','alert','message','event','issue');
+    const descKey    = find('description','detail','body','text','info','notes');
+    const sevKey     = find('severity','priority','level','urgency','criticality');
+    const typeKey    = find('type','category','kind','class','group');
+    const serviceKey = find('service','component','system','app','host','source','target');
+    const envKey     = find('environment','env','stage','region','cluster','namespace');
+
+    return rows.map((r, idx) => {
+      // Safe getter — never returns undefined
+      const get = key => (key && r[key]) ? String(r[key]).trim() : '';
+
+      // Best title: dedicated title col → description col (truncated) → first non-empty value → fallback
+      const rawTitle = get(titleKey)
+        || get(descKey).slice(0, 80)
+        || Object.values(r).map(v => String(v||'').trim()).find(v => v.length > 4)
+        || `Imported incident #${idx + 1}`;
+
+      // Best description: dedicated desc col → title col → all values joined
+      const rawDesc = get(descKey)
+        || (titleKey !== descKey ? get(titleKey) : '')
+        || Object.entries(r).map(([k,v]) => `${k}: ${v}`).join(' | ');
+
+      const combined = rawTitle + ' ' + rawDesc;
+
+      // Severity: dedicated column first, then text detection
+      const severity = _mapSeverity(get(sevKey)) || _detectSeverityFromText(combined);
+
+      // Type: dedicated column first, then text detection
+      const type = _mapType(get(typeKey)) || _detectTypeFromText(combined);
+
+      const service     = get(serviceKey) || 'unknown';
+      const environment = get(envKey)     || 'Production';
+
+      return {
+        title:       rawTitle.slice(0, 120),
+        severity,
+        type,
+        service:     service.slice(0, 60),
+        environment: environment.slice(0, 40),
+        description: rawDesc.slice(0, 500),
+        status:      'Open'
+      };
+    }).filter(i => i.title && i.title.trim());
+  }
+
+  /* ── Severity detection ──────────────────────────────────────── */
+  function _mapSeverity(raw) {
+    if (!raw) return null;
+    const s = raw.toString().toLowerCase().trim();
+    if (/^(critical|crit|p0|sev0|sev-0|s0)$/.test(s))      return 'Critical';
+    if (/^(high|p1|sev1|sev-1|s1|major|urgent)$/.test(s))   return 'High';
+    if (/^(medium|med|p2|sev2|sev-2|s2|moderate|normal)$/.test(s)) return 'Medium';
+    if (/^(low|p3|p4|sev3|sev4|minor|info|informational)$/.test(s)) return 'Low';
+    return null;
+  }
+
+  function _detectSeverityFromText(text) {
+    if (!text) return 'Medium';
+    const t = text.toLowerCase();
+    if (/\b(critical|fatal|outage|down|unavailable|complete failure|total loss)\b/.test(t))    return 'Critical';
+    if (/\b(high|error|fail|crash|exception|spike|alert|breach|attack|urgent)\b/.test(t))     return 'High';
+    if (/\b(warn|warning|degraded|slow|latency|elevated|moderate|increased|threshold)\b/.test(t)) return 'Medium';
+    return 'Low';
+  }
+
+  /* ── Type detection ──────────────────────────────────────────── */
+  function _mapType(raw) {
+    if (!raw) return null;
+    const t = raw.toString().toLowerCase();
+    if (t.includes('perf') || t.includes('cpu') || t.includes('memory') || t.includes('resource')) return 'Performance';
+    if (t.includes('avail') || t.includes('down') || t.includes('outage') || t.includes('crash')) return 'Availability';
+    if (t.includes('sec') || t.includes('auth') || t.includes('access') || t.includes('vuln')) return 'Security';
+    if (t.includes('data') || t.includes('db') || t.includes('database') || t.includes('replica')) return 'Data';
+    if (t.includes('net') || t.includes('dns') || t.includes('connect') || t.includes('timeout')) return 'Network';
+    return null;
+  }
+
+  function _detectTypeFromText(text) {
+    if (!text) return 'Other';
+    const t = text.toLowerCase();
+    if (/\b(cpu|memory|latency|slow|performance|throughput|queue|disk)\b/.test(t)) return 'Performance';
+    if (/\b(down|crash|restart|unavailable|outage|pod|service restart)\b/.test(t)) return 'Availability';
+    if (/\b(auth|login|security|certificate|tls|ssl|brute|attack|token|credential)\b/.test(t)) return 'Security';
+    if (/\b(database|db|sql|replica|query|data|migration|backup)\b/.test(t))       return 'Data';
+    if (/\b(network|dns|timeout|packet|connection|firewall|routing|ip)\b/.test(t)) return 'Network';
+    return 'Other';
+  }
+
+  /* ── CSV result summary panel ────────────────────────────────── */
+  function _showCSVResultPanel(total, autoExec, resolved, needApproval, added) {
+    const panel = document.getElementById('csvResultPanel');
+    if (!panel) return;
+
+    const rows = added.slice(0, 5).map(inc => `
+      <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0;
+                  border-bottom:1px solid var(--border-light);font-size:0.8rem;">
+        <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${_e(inc.title)}
+        </div>
+        ${Store.severityBadge(inc.severity)}
+        ${Store.riskBadge(inc._rca?.risk_score >= 60 ? 'High' : inc._rca?.risk_score >= 34 ? 'Medium' : 'Low')}
+        <span style="font-size:0.73rem;color:${inc._rca?.actions?.some(a=>a.status==='awaiting_approval') ? 'var(--risk-high)' : 'var(--risk-low)'}">
+          ${inc._rca?.actions?.some(a => a.status === 'awaiting_approval') ? '⚠ Needs approval' : '✓ Auto-handled'}
+        </span>
+      </div>`).join('');
+
     panel.style.display = 'block';
     panel.innerHTML = `
-      <div class="high-risk-box" onclick="Dashboard.openHighRiskModal()">
-        <div class="hrb-left">
-          <div class="hrb-icon">🚨</div>
-          <div class="hrb-text">
-            <div class="hrb-title">
-              ${highRisk.length} High-Risk Alert${highRisk.length > 1 ? 's' : ''} Require Immediate Attention
-            </div>
-            <div class="hrb-sub">
-              ${highRisk.filter(i=>i.severity==='Critical').length} Critical
-              &nbsp;·&nbsp;
-              ${highRisk.filter(i=>i.severity==='High').length} High
-              &nbsp;·&nbsp; Click to investigate
-            </div>
-          </div>
+      <div class="section-card">
+        <div class="section-head">
+          <div class="section-title">📥 CSV Import Complete</div>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('csvResultPanel').style.display='none'">Dismiss</button>
         </div>
-        <div class="hrb-right">
-          <span class="hrb-cta">View All →</span>
-          <div class="hrb-pulse"></div>
+        <div style="padding:0.75rem 1.25rem;">
+          <div style="display:flex;gap:1.5rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+            <div style="font-size:0.82rem;"><strong style="font-size:1.2rem;">${total}</strong><br/><span style="color:var(--text-muted)">Incidents created</span></div>
+            <div style="font-size:0.82rem;"><strong style="font-size:1.2rem;color:var(--risk-low)">${autoExec}</strong><br/><span style="color:var(--text-muted)">Auto-executed</span></div>
+            <div style="font-size:0.82rem;"><strong style="font-size:1.2rem;color:var(--risk-low)">${resolved}</strong><br/><span style="color:var(--text-muted)">Resolved</span></div>
+            <div style="font-size:0.82rem;"><strong style="font-size:1.2rem;color:var(--risk-high)">${needApproval}</strong><br/><span style="color:var(--text-muted)">Need approval</span></div>
+          </div>
+          ${rows}
+          ${added.length > 5 ? `<div style="font-size:0.76rem;color:var(--text-muted);padding-top:0.5rem;">+${added.length - 5} more — see Incidents page</div>` : ''}
         </div>
       </div>`;
   }
 
-  function openHighRiskModal() {
-    const highRisk = Store.getAll().filter(i =>
-      i.status !== 'Resolved' && (i.severity === 'Critical' || i.severity === 'High')
+  /* ── CSV parser — RFC-4180 compliant, handles any delimiter ─────
+     Supports: quoted fields with embedded commas/newlines/quotes,
+     Windows (\r\n) and Unix (\n) line endings, tab/semicolon/comma
+     delimiters, BOM prefix, trailing whitespace.
+  ──────────────────────────────────────────────────────────────── */
+  function _parseCSV(rawText) {
+    // Strip UTF-8 BOM if present, normalise Windows line endings
+    const text = rawText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    if (!text) return [];
+
+    // Auto-detect delimiter from the first line
+    const firstLine = text.split('\n')[0];
+    const delim = firstLine.includes('\t') ? '\t'
+                : (firstLine.split(';').length > firstLine.split(',').length) ? ';'
+                : ',';
+
+    // Full RFC-4180 parse — handles quoted fields with embedded delimiters/newlines
+    const records = [];
+    let cur = '', inQ = false, fields = [];
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQ) {
+        if (ch === '"') {
+          // Peek ahead — doubled quote means escaped quote inside field
+          if (text[i + 1] === '"') { cur += '"'; i++; }
+          else { inQ = false; }   // closing quote
+        } else {
+          cur += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQ = true;             // opening quote
+        } else if (ch === delim) {
+          fields.push(cur.trim());
+          cur = '';
+        } else if (ch === '\n') {
+          fields.push(cur.trim());
+          cur = '';
+          if (fields.some(f => f !== '')) records.push(fields);
+          fields = [];
+        } else {
+          cur += ch;
+        }
+      }
+    }
+    // Last field / last record
+    fields.push(cur.trim());
+    if (fields.some(f => f !== '')) records.push(fields);
+
+    if (records.length < 2) return [];
+
+    // First record is headers — normalise to safe key names
+    const headers = records[0].map(h =>
+      h.replace(/^["']|["']$/g, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'col'
     );
 
-    const body = document.getElementById('highRiskModalBody');
-    if (!body) return;
+    // Build row objects
+    return records.slice(1).map(vals => {
+      const obj = {};
+      headers.forEach((h, i) => {
+        obj[h] = (vals[i] !== undefined ? vals[i] : '').replace(/^["']|["']$/g, '').trim();
+      });
+      return obj;
+    }).filter(r => Object.values(r).some(v => v.length > 0));
+  }
 
-    if (highRisk.length === 0) {
-      body.innerHTML = '<div class="empty-state"><p>No high-risk alerts at this time.</p></div>';
-    } else {
-      body.innerHTML = `
-        <p style="font-size:0.82rem;color:#999;margin-bottom:1rem">
-          ${highRisk.length} unresolved alert${highRisk.length>1?'s':''} with Critical or High severity.
-          Click any row to open its full investigation.
-        </p>
-        <div style="display:flex;flex-direction:column;gap:0.5rem">
-          ${highRisk.map(inc => `
-            <div class="hrm-row" onclick="App.closeModal('modal-high-risk');Investigation.open('${inc.id}')">
-              <div class="hrm-left">
-                <div class="hrm-title">${_esc(inc.title)}</div>
-                <div class="hrm-meta">
-                  ${App.severityBadge(inc.severity)}
-                  ${App.statusBadge(inc.status)}
-                  <span class="text-xs text-muted">${_esc(inc.service || inc.type)}</span>
-                  <span class="text-xs text-muted">· ${App.formatTime(inc.createdAt)}</span>
-                </div>
-              </div>
-              <button class="btn btn-sm btn-danger"
-                onclick="event.stopPropagation();App.closeModal('modal-high-risk');Investigation.open('${inc.id}')">
-                Investigate →
-              </button>
-            </div>`).join('')}
-        </div>`;
+  /* _splitLine is kept for backwards compatibility but no longer used by _parseCSV */
+  function _splitLine(line, delim) {
+    const vals = []; let cur = '', inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; continue; }
+      if (ch === delim && !inQ) { vals.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
     }
-
-    App.openModal('modal-high-risk');
+    vals.push(cur.trim());
+    return vals;
   }
 
-  /* ── KPI Cards ───────────────────────────────────────── */
-  function _renderKPIs() {
-    const all          = Store.getAll();
-    const open         = all.filter(i => i.status !== 'Resolved');
-    const critical     = open.filter(i => i.severity === 'Critical').length;
-    const high         = open.filter(i => i.severity === 'High').length;
-    const investigating= open.filter(i => i.status === 'Investigating').length;
-    const resolved     = all.filter(i => i.status === 'Resolved').length;
+  /* ── KPI drill-down modal ────────────────────────────────────── */
+  function openKpiModal(filter) {
+    const all = Store.getAll();
+    const map = {
+      open:          { list: all.filter(i => i.status === 'Open'),          title: 'Open Incidents'      },
+      investigating: { list: all.filter(i => i.status === 'Investigating'), title: 'Investigating'       },
+      critical:      { list: all.filter(i => (i.severity === 'Critical' || i.severity === 'High') && i.status !== 'Resolved'), title: 'Critical & High' },
+      resolved:      { list: all.filter(i => i.status === 'Resolved'),      title: 'Resolved Incidents'  }
+    };
+    const { list = all, title = 'All Incidents' } = map[filter] || {};
+    const isResolved = filter === 'resolved';
 
-    const kpis = [
-      {
-        label: 'Open Incidents', value: open.length,
-        meta: `${critical} critical · ${high} high`,
-        css: critical > 0 ? 'red-left' : 'accent-left',
-        icon: '⚡',
-        filter: { type: 'open' }
-      },
-      {
-        label: 'Critical', value: critical,
-        meta: 'need immediate action',
-        css: critical > 0 ? 'red-left' : 'green-left',
-        icon: '🔴',
-        filter: { type: 'severity', value: 'Critical' }
-      },
-      {
-        label: 'Investigating', value: investigating,
-        meta: 'in progress',
-        css: 'yellow-left',
-        icon: '🔍',
-        filter: { type: 'status', value: 'Investigating' }
-      },
-      {
-        label: 'Resolved', value: resolved,
-        meta: 'all time total',
-        css: 'green-left',
-        icon: '✅',
-        filter: { type: 'resolved' }
-      }
-    ];
-
-    const el = document.getElementById('kpiRow');
-    if (!el) return;
-    el.innerHTML = kpis.map((k, i) => `
-      <div class="kpi-card ${k.css} kpi-clickable"
-           onclick="Dashboard.openKpiModal(${i})"
-           title="Click to view ${k.label}">
-        <div class="kpi-card-top">
-          <div class="kpi-icon-large">${k.icon}</div>
-          <svg class="kpi-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polyline points="9 18 15 12 9 6"/>
-          </svg>
-        </div>
-        <div class="kpi-value">${k.value}</div>
-        <div class="kpi-label">${k.label}</div>
-        <div class="kpi-meta">${k.meta}</div>
-      </div>`).join('');
-
-    // store kpi config for modal use
-    _kpiConfig = kpis;
-  }
-
-  /* ── KPI Drill-down Modal ────────────────────────────── */
-  let _kpiConfig = [];
-
-  function openKpiModal(idx) {
-    const k    = _kpiConfig[idx];
-    if (!k) return;
-    const all  = Store.getAll();
-
-    let list;
-    if      (k.filter.type === 'open')             list = all.filter(i => i.status !== 'Resolved');
-    else if (k.filter.type === 'severity')         list = all.filter(i => i.severity === k.filter.value && i.status !== 'Resolved');
-    else if (k.filter.type === 'status')           list = all.filter(i => i.status === k.filter.value);
-    else if (k.filter.type === 'resolved')         list = all.filter(i => i.status === 'Resolved');
-    else                                           list = [];
-
-    // Sort: most recent first
-    list = [...list].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    const titleEl = document.getElementById('kpiModalTitle');
-    if (titleEl) titleEl.innerHTML = `${k.icon} ${k.label} <span style="font-size:0.82rem;font-weight:500;color:#888;margin-left:0.5rem">${list.length} incident${list.length !== 1 ? 's' : ''}</span>`;
-
+    document.getElementById('kpiModalTitle').textContent = title;
     const body = document.getElementById('kpiModalBody');
     if (!body) return;
 
-    if (list.length === 0) {
-      body.innerHTML = `
-        <div class="empty-state">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>
-          </svg>
-          <h3>All clear</h3>
-          <p>No incidents in this category right now.</p>
-        </div>`;
-    } else {
-      body.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:0.5rem">
-          ${list.map(inc => `
-            <div class="kpi-modal-row" onclick="App.closeModal('modal-kpi');Investigation.open('${inc.id}')">
-              <div class="kpi-modal-left">
-                <div class="kpi-modal-title">${_esc(inc.title)}</div>
-                <div class="kpi-modal-meta">
-                  ${App.severityBadge(inc.severity)}
-                  ${App.statusBadge(inc.status)}
-                  <span class="text-xs text-muted">${_esc(inc.service || inc.type)}</span>
-                  <span class="text-xs text-muted">·</span>
-                  <span class="text-xs text-muted">${_esc(inc.environment)}</span>
-                  <span class="text-xs text-muted">·</span>
-                  <span class="text-xs text-muted">${App.formatTime(inc.createdAt)}</span>
-                </div>
-                ${inc.status === 'Resolved' && inc.resolution ? `
-                  <div class="kpi-modal-resolution">✓ ${_esc(inc.resolution.slice(0, 90))}${inc.resolution.length > 90 ? '…' : ''}</div>
-                ` : ''}
-              </div>
-              <div class="kpi-modal-right">
-                <button class="btn btn-sm ${inc.severity === 'Critical' ? 'btn-danger' : inc.status === 'Resolved' ? 'btn-ghost' : 'btn-ghost'}"
-                  onclick="event.stopPropagation();App.closeModal('modal-kpi');Investigation.open('${inc.id}')">
-                  ${inc.status === 'Resolved' ? 'View' : 'Investigate →'}
-                </button>
-              </div>
-            </div>`).join('')}
-        </div>`;
-    }
+    body.innerHTML = list.length ? list.map(inc => `
+      <div class="incident-item">
+        <div class="inc-left">
+          <div class="inc-title">${_e(inc.title)}</div>
+          <div class="inc-meta">
+            ${Store.severityBadge(inc.severity)} ${Store.statusBadge(inc.status)}
+            <span class="sep">·</span><span>${_e(inc.service || '—')}</span>
+            <span class="sep">·</span><span>${Store.relativeTime(inc.created_at)}</span>
+            ${inc.mttr != null ? `<span class="sep">·</span><span>MTTR: ${inc.mttr} min</span>` : ''}
+          </div>
+        </div>
+        <div class="inc-actions">
+          ${isResolved
+            ? `<button class="btn btn-ghost btn-sm"
+                onclick="App.closeModal('modal-kpi');History.viewIncident('${inc.id}')">View</button>`
+            : `<button class="btn btn-ghost btn-sm"
+                onclick="App.closeModal('modal-kpi');Investigation.open('${inc.id}')">Investigate</button>`}
+        </div>
+      </div>`).join('')
+      : `<div class="empty-state"><div class="empty-state-icon">✅</div><p>No incidents here.</p></div>`;
 
     App.openModal('modal-kpi');
   }
 
-  /* ── Charts ──────────────────────────────────────────── */
-  function _renderCharts() {
-    _destroyAll();
-    _buildSeverityChart();
-    _buildTypeChart();
-    _buildVolumeChart();
-  }
-
-  function _rebuildCharts() {
-    _destroyAll();
-    _buildSeverityChart();
-    _buildTypeChart();
-    _buildVolumeChart();
-  }
-
-  function _destroyAll() {
-    Object.values(_charts).forEach(c => { try { c.destroy(); } catch(_) {} });
-    _charts = {};
-  }
-
-  const _cd = {
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        backgroundColor: '#1a1a1a',
-        titleColor: '#ffffff',
-        bodyColor: '#999999',
-        borderColor: 'rgba(185,204,221,0.15)',
-        borderWidth: 1,
-        padding: 9,
-        cornerRadius: 6
-      }
-    },
-    animation: { duration: 500, easing: 'easeOutQuart' }
-  };
-
-  function _buildSeverityChart() {
-    const ctx = document.getElementById('chartSeverity')?.getContext('2d');
-    if (!ctx) return;
-    const c = Store.getSeverityCounts();
-    _charts.severity = new Chart(ctx, {
-      type: 'bar',
-      data: {
-        labels: ['Critical','High','Medium','Low'],
-        datasets: [{
-          data: [c.Critical, c.High, c.Medium, c.Low],
-          backgroundColor: [
-            'rgba(255,68,68,0.85)', 'rgba(255,136,0,0.85)',
-            'rgba(185,204,221,0.7)', 'rgba(90,154,90,0.85)'
-          ],
-          borderColor: ['#ff4444','#ff8800','#b9ccdd','#5a9a5a'],
-          borderWidth: 1, borderRadius: 5, borderSkipped: false, barThickness: 32
-        }]
-      },
-      options: {
-        ..._cd, responsive: true, maintainAspectRatio: false,
-        scales: {
-          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 11, weight: '500' } } },
-          y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#666', font: { size: 11 }, stepSize: 1 }, beginAtZero: true }
-        }
-      }
-    });
-  }
-
-  function _buildTypeChart() {
-    const ctx = document.getElementById('chartType')?.getContext('2d');
-    if (!ctx) return;
-    const counts = Store.getTypeCounts();
-    const labels = Object.keys(counts);
-    const data   = Object.values(counts);
-    const palette = [
-      'rgba(255,68,68,0.8)','rgba(255,136,0,0.8)','rgba(185,204,221,0.8)',
-      'rgba(90,154,90,0.8)','rgba(129,140,248,0.8)','rgba(251,191,36,0.8)'
-    ];
-    _charts.type = new Chart(ctx, {
-      type: 'doughnut',
-      data: {
-        labels,
-        datasets: [{
-          data,
-          backgroundColor: labels.map((_,i) => palette[i % palette.length]),
-          borderColor: '#111111',
-          borderWidth: 2,
-          hoverOffset: 6
-        }]
-      },
-      options: {
-        ..._cd,
-        plugins: {
-          ..._cd.plugins,
-          legend: {
-            display: true, position: 'bottom',
-            labels: { color: '#888', font: { size: 10 }, padding: 10, boxWidth: 10 }
-          }
-        },
-        responsive: true, maintainAspectRatio: false, cutout: '60%'
-      }
-    });
-  }
-
-  function _buildVolumeChart() {
-    const ctx = document.getElementById('chartVolume')?.getContext('2d');
-    if (!ctx) return;
-    const { labels, counts } = Store.getVolume();
-    _charts.volume = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: 'Incidents',
-          data: counts,
-          borderColor: '#660000',
-          backgroundColor: 'rgba(102,0,0,0.15)',
-          borderWidth: 2.5,
-          pointBackgroundColor: '#aa0000',
-          pointRadius: 4,
-          pointHoverRadius: 6,
-          fill: true,
-          tension: 0.4
-        }]
-      },
-      options: {
-        ..._cd, responsive: true, maintainAspectRatio: false,
-        scales: {
-          x: { grid: { display: false }, ticks: { color: '#666', font: { size: 10 }, maxRotation: 30 } },
-          y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#666', font: { size: 11 }, stepSize: 1 }, beginAtZero: true }
-        }
-      }
-    });
-  }
-
-  /* ── Recent incidents list ───────────────────────────── */
-  function _renderRecentList() {
-    const el = document.getElementById('dashRecentList');
-    if (!el) return;
-
-    const incidents = Store.getIncidents().slice(0, 6);
-
-    if (incidents.length === 0) {
-      el.innerHTML = `
-        <div class="empty-state" style="padding:2rem">
-          <p>✅ No open incidents. All systems healthy.</p>
-        </div>`;
-      return;
-    }
-
-    el.innerHTML = incidents.map(inc => {
-      const isHigh = inc.severity === 'Critical' || inc.severity === 'High';
-      return `
-        <div class="incident-row${isHigh ? ' dash-row-urgent' : ''}"
-          onclick="Investigation.open('${inc.id}')" style="cursor:pointer">
-          <div class="inc-left">
-            <div class="inc-title">
-              ${isHigh ? '<span style="color:#ff4444">●</span> ' : ''}${_esc(inc.title)}
-            </div>
-            <div class="inc-meta">
-              ${App.severityBadge(inc.severity)}
-              ${App.statusBadge(inc.status)}
-              <span>${_esc(inc.service || inc.type)}</span>
-              <span>${_esc(inc.environment)}</span>
-            </div>
+  /* ── High-risk modal ─────────────────────────────────────────── */
+  function openHighRiskModal() {
+    const crit = Store.getCritical();
+    const body = document.getElementById('highRiskModalBody');
+    if (!body) return;
+    body.innerHTML = crit.length ? crit.map(inc => `
+      <div class="incident-item">
+        <div class="inc-left">
+          <div class="inc-title">${_e(inc.title)}</div>
+          <div class="inc-meta">
+            ${Store.severityBadge(inc.severity)} ${Store.statusBadge(inc.status)}
+            <span class="sep">·</span><span>${_e(inc.service || '—')}</span>
+            <span class="sep">·</span><span>${Store.relativeTime(inc.created_at)}</span>
           </div>
-          <div class="inc-right">
-            <span class="inc-time">${App.formatTime(inc.createdAt)}</span>
-            <button class="btn btn-sm${isHigh ? ' btn-danger' : ' btn-ghost'}"
-              onclick="event.stopPropagation();Investigation.open('${inc.id}')">
-              Investigate
-            </button>
-          </div>
-        </div>`;
-    }).join('');
-  }
-
-  /* ── CSV Dataset Import ──────────────────────────────── */
-  function _setupCsvUpload() {
-    const input = document.getElementById('dashCsvFileInput');
-    if (!input || input._csvBound) return;
-    input._csvBound = true;
-    input.addEventListener('change', () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      input.value = '';
-      _parseCsvFile(file);
-    });
-  }
-
-  function _parseCsvFile(file) {
-    const status = document.getElementById('csvUploadStatus');
-    const btn    = document.querySelector('.csv-upload-btn');
-    if (status) { status.textContent = 'Reading file…'; status.className = 'ocr-db-status'; }
-    if (btn)    btn.style.opacity = '0.6';
-
-    const reader = new FileReader();
-    reader.onload = e => {
-      try {
-        const text  = e.target.result;
-        const lines = text.split(/\r?\n/).filter(l => l.trim());
-        if (lines.length < 2) {
-          _csvError(status, btn, 'CSV must have at least one header row and one data row.');
-          return;
-        }
-
-        // Parse header — normalise keys for fuzzy matching
-        const rawHeaders = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g,''));
-        const headers    = rawHeaders.map(h => h.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''));
-
-        // ── Fuzzy column mapping — works with ANY column names ──
-        // For each field we try an ordered list of candidate names
-        const _findCol = (candidates) => {
-          for (const c of candidates) {
-            const idx = headers.findIndex(h => h.includes(c) || c.includes(h));
-            if (idx !== -1) return idx;
-          }
-          return -1;
-        };
-
-        const colMap = {
-          title:       _findCol(['title','name','incident','summary','subject','alert','event','headline','issue','problem']),
-          severity:    _findCol(['severity','sev','priority','level','criticality','urgency','impact_level']),
-          type:        _findCol(['type','category','kind','class','incident_type','error_type','failure_type']),
-          service:     _findCol(['service','svc','component','system','app','application','host','source','target','affected']),
-          environment: _findCol(['environment','env','stage','region','zone','cluster','namespace','deployment_env']),
-          description: _findCol(['description','desc','details','message','msg','body','text','notes','error','log','content','info','detail']),
-        };
-
-        // If no title column found, use first column as title
-        if (colMap.title === -1) colMap.title = 0;
-
-        // Collect all column values not mapped — concatenate as extra description context
-        const mappedCols = new Set(Object.values(colMap).filter(v => v !== -1));
-
-        const validSeverities = ['Critical','High','Medium','Low'];
-        const validTypes      = ['Performance','Availability','Security','Data','Network','Other'];
-        const validEnvs       = ['Production','Staging','Development'];
-
-        // Severity inference from free text
-        const _inferSeverity = (txt) => {
-          const t = (txt || '').toLowerCase();
-          if (/critical|fatal|p0|sev[- ]?1|down|outage/.test(t))       return 'Critical';
-          if (/high|error|fail|crash|p1|sev[- ]?2|urgent/.test(t))     return 'High';
-          if (/medium|warn|degraded|slow|p2|sev[- ]?3/.test(t))        return 'Medium';
-          return 'Low';
-        };
-
-        // Type inference from free text
-        const _inferType = (txt) => {
-          const t = (txt || '').toLowerCase();
-          if (/cpu|memory|oom|slow|latency|queue|throughput/.test(t))   return 'Performance';
-          if (/down|unavailable|503|crash|restart|pod/.test(t))         return 'Availability';
-          if (/timeout|connection|network|dns|gateway|retry/.test(t))  return 'Network';
-          if (/replica|replication|stale|data|db|sql|mongo/.test(t))   return 'Data';
-          if (/breach|attack|auth|unauthori|credential/.test(t))       return 'Security';
-          return 'Other';
-        };
-
-        const user    = App.getUser();
-        const created = [];
-        const skipped = [];
-        const warnings= [];
-
-        for (let i = 1; i < lines.length; i++) {
-          const row = _splitCsvRow(lines[i]);
-          if (!row.length || row.every(c => !c.trim())) continue;
-
-          const get = idx => (idx !== -1 && row[idx] !== undefined) ? row[idx].trim().replace(/^["']|["']$/g,'') : '';
-
-          // Build extra context from unmapped columns
-          const extraParts = [];
-          row.forEach((val, idx) => {
-            if (!mappedCols.has(idx) && val.trim()) {
-              extraParts.push(`${rawHeaders[idx] || idx}: ${val.trim()}`);
-            }
-          });
-
-          const titleRaw = get(colMap.title);
-          if (!titleRaw) { skipped.push(`Row ${i+1}: no title found`); continue; }
-
-          // Severity: use column if present, else infer from title+description+extra
-          const sevRaw  = get(colMap.severity);
-          const allText = [titleRaw, get(colMap.description), ...extraParts].join(' ');
-          let sev = sevRaw
-            ? (validSeverities.find(s => s.toLowerCase() === sevRaw.toLowerCase()) || _inferSeverity(sevRaw))
-            : _inferSeverity(allText);
-
-          // Type: use column if present, else infer
-          const typeRaw = get(colMap.type);
-          let incType = typeRaw
-            ? (validTypes.find(t => t.toLowerCase() === typeRaw.toLowerCase()) || _inferType(allText))
-            : _inferType(allText);
-
-          // Environment
-          const envRaw = get(colMap.environment);
-          const env    = envRaw
-            ? (validEnvs.find(v => v.toLowerCase() === envRaw.toLowerCase()) || 'Production')
-            : 'Production';
-
-          // Description: primary column + any extra unmapped columns
-          const descBase  = get(colMap.description);
-          const descFull  = [descBase, ...extraParts].filter(Boolean).join(' | ') || `Imported from CSV row ${i+1}`;
-
-          const inc = Store.createIncident({
-            title:       titleRaw,
-            severity:    sev,
-            type:        incType,
-            service:     get(colMap.service),
-            environment: env,
-            description: descFull,
-            createdBy:   user ? user.name : 'CSV Import',
-          });
-          created.push(inc);
-        }
-
-        if (btn) btn.style.opacity = '1';
-
-        if (created.length === 0) {
-          _csvError(status, btn, `No valid rows found in the CSV. Check the file has at least one data row.`);
-          return;
-        }
-
-        if (status) {
-          status.textContent = `✓ ${created.length} imported`;
-          status.className = 'ocr-db-status success';
-          setTimeout(() => { status.textContent = ''; status.className = 'ocr-db-status'; }, 6000);
-        }
-
-        _showCsvResult(created, skipped, warnings);
-        _lastCsvIncidents = created.map(inc => ({
-          id:          inc.id,
-          title:       inc.title,
-          severity:    inc.severity,
-          type:        inc.type,
-          service:     inc.service || '',
-          environment: inc.environment || 'Production',
-          description: inc.description || '',
-        }));
-        Dashboard.refresh();
-        App.toast(`CSV imported: ${created.length} incident${created.length!==1?'s':''} created.`, 'success', 5000);
-
-      } catch (err) {
-        _csvError(status, btn, 'Failed to parse CSV. Ensure the file is a valid comma-separated text file.');
-        console.error('CSV parse error:', err);
-      }
-    };
-    reader.onerror = () => _csvError(document.getElementById('csvUploadStatus'), document.querySelector('.csv-upload-btn'), 'Could not read file.');
-    reader.readAsText(file, 'UTF-8');
-  }
-
-  function _splitCsvRow(line) {
-    // Handles quoted fields with commas inside
-    const result = [];
-    let cur = '', inQuote = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') { inQuote = !inQuote; }
-      else if (ch === ',' && !inQuote) { result.push(cur.trim()); cur = ''; }
-      else { cur += ch; }
-    }
-    result.push(cur.trim());
-    return result;
-  }
-
-  function _csvError(status, btn, msg) {
-    if (status) { status.textContent = msg; status.className = 'ocr-db-status error'; }
-    if (btn)    btn.style.opacity = '1';
-    App.toast(msg, 'error', 6000);
-  }
-
-  function _showCsvResult(created, skipped, warnings) {
-    const panel = document.getElementById('csvResultPanel');
-    if (!panel) return;
-    panel.style.display = 'block';
-    panel.innerHTML = `
-      <div class="csv-result-box">
-        <div class="csv-result-header">
-          <div class="csv-result-icon">📂</div>
-          <div>
-            <div class="csv-result-title">CSV Import Complete</div>
-            <div class="csv-result-sub">
-              <span class="csv-stat green">${created.length} created</span>
-              ${skipped.length  ? `<span class="csv-stat red">${skipped.length} skipped</span>`   : ''}
-              ${warnings.length ? `<span class="csv-stat yellow">${warnings.length} corrected</span>` : ''}
-            </div>
-          </div>
-          <button class="csv-result-close" onclick="document.getElementById('csvResultPanel').style.display='none'">×</button>
         </div>
-
-        <div class="csv-result-table">
-          <div class="csv-result-head">
-            <span>ID</span><span>Title</span><span>Severity</span><span>Type</span><span>Service</span>
-          </div>
-          ${created.slice(0, 10).map(inc => `
-            <div class="csv-result-row" onclick="Investigation.open('${inc.id}')">
-              <span class="csv-id">${_esc(inc.id)}</span>
-              <span class="csv-title">${_esc(inc.title)}</span>
-              <span>${App.severityBadge(inc.severity)}</span>
-              <span class="csv-type">${_esc(inc.type)}</span>
-              <span class="csv-svc">${_esc(inc.service || '—')}</span>
-            </div>`).join('')}
-          ${created.length > 10 ? `<div class="csv-result-more">+ ${created.length - 10} more — go to Incidents page to view all</div>` : ''}
+        <div class="inc-actions">
+          <button class="btn btn-danger btn-sm"
+            onclick="App.closeModal('modal-high-risk');Investigation.open('${inc.id}')">Investigate Now</button>
         </div>
-
-        ${skipped.length ? `
-          <details class="csv-issues">
-            <summary>⚠ ${skipped.length} skipped row${skipped.length!==1?'s':''}</summary>
-            <ul>${skipped.map(s=>`<li>${_esc(s)}</li>`).join('')}</ul>
-          </details>` : ''}
-
-        ${warnings.length ? `
-          <details class="csv-issues">
-            <summary>ℹ ${warnings.length} auto-correction${warnings.length!==1?'s':''}</summary>
-            <ul>${warnings.map(w=>`<li>${_esc(w)}</li>`).join('')}</ul>
-          </details>` : ''}
-
-        <!-- Live Demo launch button -->
-        <div class="csv-demo-launch">
-          <div class="csv-demo-launch-info">
-            <span class="csv-demo-dot"></span>
-            <span><strong>${created.length} incident${created.length!==1?'s':''}</strong> ready for live simulation</span>
-          </div>
-          <button class="btn btn-primary csv-demo-btn" onclick="Dashboard._launchLiveDemo()">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            ▶ Run Live Demo
-          </button>
-        </div>
-      </div>`;
+      </div>`).join('')
+      : `<div class="empty-state"><p>No critical incidents right now.</p></div>`;
+    App.openModal('modal-high-risk');
   }
 
+  /* ── CSV template download ───────────────────────────────────── */
   function downloadCsvTemplate() {
-    const headers = 'title,severity,type,service,environment,description';
-    const rows = [
-      '"Database CPU High — production-db-01",Critical,Performance,database-primary,Production,"CPU at 95% for 10 mins. Slow queries on payments table."',
-      '"Payment API Timeout — checkout",High,Network,payment-api,Production,"ECONNRESET after 30s. Error rate 38%."',
-      '"Memory Usage High — order-service",High,Performance,order-service,Production,"Memory at 87% of limit. OOM expected in 30 mins."',
-      '"Service Unavailable — auth pods",Medium,Availability,auth-service,Staging,"HTTP 503. CrashLoopBackOff on 2 pods."',
-      '"API Rate Limit — maps service",Low,Network,location-service,Production,"HTTP 429 from maps provider. Non-critical."'
-    ];
-    const csv  = headers + '\n' + rows.join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = 'react-x-incidents-template.csv';
-    document.body.appendChild(a);
+    const csv = 'title,severity,type,service,environment,description\n'
+      + '"Database CPU spike — production-db","Critical","Performance","production-db","Production","CPU at 98% for 10 min. Queries timing out."\n'
+      + '"Auth service crash loop","High","Availability","auth-svc","Production","OOMKilled 5 times in 20 min after v3.4.1 deploy"\n'
+      + '"DNS resolution failures","Medium","Network","api-gateway","Production","Packet loss 8.3%, DNS latency 2400ms"';
+    const a = Object.assign(document.createElement('a'), {
+      href: URL.createObjectURL(new Blob([csv], { type: 'text/csv' })),
+      download: 'reactx-incidents-template.csv'
+    });
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    App.toast('Template downloaded — fill it in and re-upload.', 'info', 4000);
-  }
-  function _setupDashOCR() {
-    const input = document.getElementById('dashOcrFileInput');
-    if (!input || input._ocrBound) return;
-    input._ocrBound = true;
-
-    input.addEventListener('change', () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      _runDashOCR(file);
-      input.value = '';
-    });
+    App.toast('Template downloaded.', 'success');
   }
 
-  function _runDashOCR(file) {
-    const status = document.getElementById('dashOcrStatus');
-    const btn    = document.querySelector('.ocr-db-btn');
+  function _e(s) { return App.esc ? App.esc(s) : String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function _delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    if (status) { status.textContent = 'Loading OCR…'; status.className = 'ocr-db-status'; }
-    if (btn)    btn.style.opacity = '0.6';
-
-    if (typeof Tesseract === 'undefined') {
-      if (status) { status.textContent = 'OCR library not loaded.'; status.className = 'ocr-db-status error'; }
-      if (btn)    btn.style.opacity = '1';
-      App.toast('Tesseract OCR library is not available. Check your internet connection.', 'error', 5000);
-      return;
-    }
-
-    Tesseract.recognize(file, 'eng', {
-      logger: m => {
-        if (m.status === 'recognizing text' && status)
-          status.textContent = `Extracting… ${Math.round((m.progress || 0) * 100)}%`;
-      }
-    }).then(({ data: { text } }) => {
-      const cleaned = text.replace(/\s+/g, ' ').trim();
-      if (btn) btn.style.opacity = '1';
-
-      if (!cleaned) {
-        if (status) { status.textContent = 'No text found in image.'; status.className = 'ocr-db-status error'; }
-        App.toast('No text could be extracted from that image. Try a clearer screenshot.', 'warning');
-        return;
-      }
-
-      // Auto-detect severity
-      const lower = cleaned.toLowerCase();
-      let severity = 'Low';
-      if      (lower.includes('critical') || lower.includes('fatal') || lower.includes('down'))    severity = 'Critical';
-      else if (lower.includes('error')    || lower.includes('exception') || lower.includes('fail')) severity = 'High';
-      else if (lower.includes('warn')     || lower.includes('slow') || lower.includes('timeout'))  severity = 'Medium';
-
-      if (status) {
-        status.textContent = `✓ ${cleaned.length} chars — opening form…`;
-        status.className = 'ocr-db-status success';
-      }
-
-      // Open the new incident modal, then pre-fill it
-      setTimeout(() => {
-        Incidents.openNewIncidentModal(null, null);
-        setTimeout(() => {
-          const descEl = document.getElementById('incDescription');
-          const sevEl  = document.getElementById('incSeverity');
-          if (descEl) descEl.value = cleaned;
-          if (sevEl)  sevEl.value  = severity;
-          App.toast(`OCR complete — ${cleaned.length} chars extracted. Severity: ${severity}. Review and submit.`, 'success', 6000);
-          setTimeout(() => {
-            if (status) { status.textContent = ''; status.className = 'ocr-db-status'; }
-          }, 5000);
-        }, 250);
-      }, 500);
-    }).catch(err => {
-      console.error('OCR error', err);
-      if (btn) btn.style.opacity = '1';
-      if (status) { status.textContent = 'OCR failed. Try a clearer image.'; status.className = 'ocr-db-status error'; }
-      App.toast('OCR extraction failed. Try a higher-resolution screenshot.', 'error');
-    });
-  }
-
-  function _esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
-
-  /* ── Live Demo launcher ──────────────────────────────── */
-  function _launchLiveDemo() {
-    if (typeof LiveDemo === 'undefined') {
-      App.toast('Live Demo module not loaded.', 'error'); return;
-    }
-    if (!_lastCsvIncidents || _lastCsvIncidents.length === 0) {
-      App.toast('Upload a CSV first to run the Live Demo.', 'warning'); return;
-    }
-    LiveDemo.launch(_lastCsvIncidents);
-  }
-
-  return { init, refresh, openHighRiskModal, openKpiModal, downloadCsvTemplate, _launchLiveDemo };
-
+  return { refresh, refreshKPIsOnly, openKpiModal, openHighRiskModal, downloadCsvTemplate };
 })();
-
-window.Dashboard = Dashboard;

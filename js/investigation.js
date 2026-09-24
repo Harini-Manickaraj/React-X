@@ -1,300 +1,440 @@
 /* ================================================================
-   REACT-X — investigation.js
-   Investigation modal: 7-section view with numbered resolution steps
+   investigation.js  —  REACT-X  v4
+   Full 9-stage pipeline modal.
+   KEY FIX: Low-risk actions auto-execute on open, no button needed.
+   Medium: auto or approval per Config.requireApprovalMedium.
+   High/Critical: hard block with Approve + Reject buttons.
    ================================================================ */
-
 const Investigation = (() => {
 
-  /* ── Resolution step templates per incident type ── */
-  const _resolutionSteps = {
-    Performance: [
-      'Open your database monitoring tool and identify the top slow queries by execution time.',
-      'Kill the long-running blocking queries: run SELECT pg_terminate_backend(pid) for each query with duration > 30s.',
-      'Add a composite index on the most-queried columns (e.g. account_id, created_at) to eliminate full table scans.',
-      'Increase the connection pool limit in your application config (e.g. max_connections=1024) and reload the config.',
-      'Set a query timeout limit at the application layer (e.g. statement_timeout = 10000ms) to prevent future lock chains.',
-      'Monitor CPU and connection count for 10 minutes to confirm metrics are recovering below thresholds.',
-      'If metrics do not recover within 15 minutes, restart the affected service pods and re-verify.'
-    ],
-    Availability: [
-      'Check pod status: run kubectl get pods -n <namespace> and identify all pods in CrashLoopBackOff state.',
-      'Inspect crash logs: kubectl logs <pod-name> --previous to find the OOM kill signal or crash reason.',
-      'Increase the container memory limit immediately: edit the deployment manifest and raise limits.memory.',
-      'Apply the change: kubectl apply -f <deployment.yaml> and watch pods recover with kubectl get pods -w.',
-      'Profile the application for memory leaks using heap profiling tools (e.g. heapdump, pprof, JVM heap analysis).',
-      'Add a memory usage alert at 75% of the limit so future OOM conditions are caught early.',
-      'Verify all health-check endpoints respond with HTTP 200 before closing the incident.'
-    ],
-    Network: [
-      'Confirm the upstream service (e.g. payment-gateway) is experiencing elevated latency via its status page or metrics.',
-      'Enable the circuit breaker on the affected client: set circuit-breaker.enabled=true and threshold to 50% error rate.',
-      'Immediately stop retry storms by adding a short-circuit: return a fallback response if the upstream is degraded.',
-      'Update retry logic across all affected clients to use exponential backoff with jitter (e.g. base 100ms, max 10s).',
-      'Set explicit timeout budgets per downstream call (e.g. connect_timeout=2s, read_timeout=5s).',
-      'Monitor error rate and p99 latency every 2 minutes until both return below acceptable thresholds.',
-      'Once upstream recovers, open the circuit breaker and confirm traffic resumes normally.'
-    ],
-    Security: [
-      'Immediately block all 18 identified source IPs at the firewall or WAF level.',
-      'Force password resets for all targeted high-privilege accounts and invalidate their active sessions.',
-      'Review authentication logs for the past 24 hours to confirm no successful unauthorised logins occurred.',
-      'Lower the rate-limiter threshold to 10 failed attempts per IP per minute and deploy the config change.',
-      'Enable CAPTCHA or MFA challenges after 3 consecutive failed login attempts for all accounts.',
-      'Subscribe to have-i-been-pwned or a similar breach database feed for early detection of leaked credentials.',
-      'Schedule a post-incident security review and update your threat model within 48 hours.'
-    ],
-    Data: [
-      'Identify the replication I/O thread status: run SHOW SLAVE STATUS\\G on the replica host.',
-      'Stop the batch export job that is competing for disk I/O: kill the process or pause the scheduled job.',
-      'Restart the replication I/O thread: run STOP SLAVE IO_THREAD; START SLAVE IO_THREAD; on the replica.',
-      'Monitor replication lag with Seconds_Behind_Master every 60 seconds until it returns to < 5 seconds.',
-      'Move batch export and analytics jobs to a dedicated read replica or a separate analytics database.',
-      'Add disk I/O throttle limits to all batch jobs (e.g. ionice, cgroups blkio) to prevent future saturation.',
-      'Set up a replication lag alert that fires when lag exceeds 30 seconds so the team is notified early.'
-    ],
-    Other: [
-      'Review all deployments and config changes made in the last 2 hours using your CI/CD pipeline audit log.',
-      'Check upstream service health pages and dependency status dashboards for any known outages.',
-      'Inspect application error logs for the first occurrence of the issue to establish an accurate start time.',
-      'Identify the minimal reproducible change that triggered the incident and prepare a rollback if needed.',
-      'Escalate to the service owner with the evidence collected and the suspected root cause.',
-      'Apply the identified fix and monitor the service for 10 minutes before confirming resolution.',
-      'Write a post-mortem summary with timeline, root cause, fix, and prevention steps within 24 hours.'
-    ]
-  };
+  let _currentId  = null;
+  let _currentRCA = null;
+  let _currentInc = null;
+  let _executing  = false;
 
-  /* ── Open ────────────────────────────────────────────── */
-  function open(id) {
+  /* ── Open ───────────────────────────────────────────────────── */
+  async function open(id) {
+    _currentId  = id;
+    _currentRCA = null;
+    _executing  = false;
+
     const inc = Store.getById(id);
-    if (!inc) { App.toast('Incident not found.', 'error'); return; }
-    _render(inc);
+    if (!inc) return;
+    _currentInc = inc;
+
+    if (inc.status === 'Open') {
+      await API.updateIncident(id, { status: 'Investigating' });
+      _currentInc = Store.getById(id);
+    }
+
+    const shortTitle = inc.title.length > 55 ? inc.title.slice(0, 55) + '…' : inc.title;
+    document.getElementById('investigationTitle').textContent = `Investigation — ${shortTitle}`;
+
+    const body = document.getElementById('investigationBody');
+    if (!body) return;
+    body.innerHTML = `
+      <div style="text-align:center;padding:3rem 1rem;">
+        <div class="demo-waiting-spinner" style="margin:0 auto 1rem;"></div>
+        <p style="color:var(--text-muted);font-size:0.88rem;">AI pipeline running — analysing incident…</p>
+        ${_pipelineBar('investigate')}
+      </div>`;
+
     App.openModal('modal-investigation');
+
+    await _delay(700);
+    const res = await API.runPipeline(id);
+    _currentRCA = res.data;
+
+    const live = Store.getById(id);
+    if (live) { live._rca = _currentRCA; _currentInc = live; }
+
+    _render();
+
+    // Auto-execute all pre-authorised actions immediately after render
+    await _autoExecuteEligible();
   }
 
-  /* ── Render ──────────────────────────────────────────── */
-  function _render(inc) {
-    const body    = document.getElementById('investigationBody');
-    const titleEl = document.getElementById('investigationTitle');
-    if (!body) return;
+  /* ── Auto-execute eligible actions on open ─────────────────── */
+  async function _autoExecuteEligible() {
+    if (!_currentRCA) return;
+    const toAutoRun = _currentRCA.actions.filter(act =>
+      Config.shouldAutoExecute(act.risk_level) &&
+      act.status !== 'completed' &&
+      act.status !== 'failed'
+    );
+    if (!toAutoRun.length) return;
 
-    if (titleEl) titleEl.textContent = `${inc.id} — Investigation`;
+    // Small pause so the user sees the modal before execution starts
+    await _delay(600);
 
-    const analysis   = Store.analyse(inc);
-    const risk       = analysis.risk;
-    const riskLabel  = risk >= 75 ? 'High' : risk >= 45 ? 'Medium' : 'Low';
-    const riskColor  = risk >= 75 ? '#ff4444' : risk >= 45 ? '#ff8800' : '#5a9a5a';
-    const isResolved = inc.status === 'Resolved';
+    for (const act of toAutoRun) {
+      if (_executing) break;
+      _executing = true;
+      _setFooterRunning(act.id, 'Auto-executing (pre-authorised)…');
+      await _delay(1400);
+      const result = Store.executeAction(act);
+      const idx = _currentRCA.actions.findIndex(a => a.id === act.id);
+      if (idx !== -1) _currentRCA.actions[idx] = result;
+      const live = Store.getById(_currentId);
+      if (live?._rca) live._rca.actions = _currentRCA.actions;
+      _executing = false;
+      _render(); // re-render to show result
 
-    const steps = _resolutionSteps[inc.type] || _resolutionSteps['Other'];
+      if (result.verification_result?.passed) {
+        App.toast(`✓ Auto-executed: ${act.name} — metrics recovered`, 'success');
+      } else if (Config.get('autoRollback') && act.rollback_command) {
+        App.toast(`⚠ Auto-rollback triggered for: ${act.name}`, 'warning');
+      } else {
+        App.toast(`⚠ Auto-execution of ${act.name} — verification failed`, 'warning');
+      }
+
+      await _delay(300);
+    }
+
+    // Try to auto-resolve if all eligible actions passed
+    const wasResolved = Store.tryAutoResolve(_currentId);
+    if (wasResolved) {
+      _currentInc = Store.getById(_currentId);
+      App.toast('✅ Incident auto-resolved — all actions passed verification', 'success');
+      _render();
+      // Refresh history so it shows up immediately
+      if (document.getElementById('page-history')?.classList.contains('active')) History.refresh();
+    }
+
+    Dashboard.refresh();
+  }
+
+  /* ── Master render ─────────────────────────────────────────── */
+  function _render() {
+    const body = document.getElementById('investigationBody');
+    if (!body || !_currentRCA) return;
+    const inc    = _currentInc;
+    const rca    = _currentRCA;
+    const score  = rca.risk_score || 40;
+    const rlabel = _riskLabel(score);
 
     body.innerHTML = `
+      ${_pipelineBar('execute')}
+      ${_sec(1, '🔍', 'Detect',              _detectHtml(inc))}
+      ${_sec(2, '🔗', 'Evidence',             _evidenceHtml(rca))}
+      ${_sec(3, '🧪', 'Root Cause',           _rcaHtml(rca))}
+      ${_sec(4, '💥', 'Impact & Blast Radius', _impactHtml(rca))}
+      ${_sec(5, '📋', 'Resolution Plan',       _planHtml(rca))}
+      ${_sec(6, '⚖️', 'Risk Assessment',       _riskHtml(score, rlabel))}
+      ${_sec(7, '⚡', 'AI Actions',            _actionsHtml(rca, inc))}
+      ${inc.status === 'Resolved'
+        ? _sec(8, '✅', 'Resolution', _resolvedHtml(inc))
+        : _resolveFormHtml(inc)}`;
 
-    <!-- ① Incident header ─────────────────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Incident</div>
-      <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.65rem;flex-wrap:wrap">
-        ${App.severityBadge(inc.severity)}
-        ${App.statusBadge(inc.status)}
-        <span class="text-xs text-muted">${_esc(inc.id)}</span>
-        <span class="text-xs text-muted">·</span>
-        <span class="text-xs text-muted">${_esc(inc.service || inc.type)}</span>
-        <span class="text-xs text-muted">·</span>
-        <span class="text-xs text-muted">${_esc(inc.environment)}</span>
-        <span class="text-xs text-muted">·</span>
-        <span class="text-xs text-muted">Opened ${App.formatTime(inc.createdAt)} by ${_esc(inc.createdBy)}</span>
-      </div>
-      <div style="font-weight:700;font-size:0.97rem;color:#ffffff;margin-bottom:0.65rem">${_esc(inc.title)}</div>
-      <div class="inv-summary">${_esc(inc.description)}</div>
-      ${inc.imageDataUrl ? `
-        <div style="margin-top:0.85rem">
-          <div class="inv-section-title" style="margin-bottom:0.45rem">Attached Screenshot</div>
-          <img src="${inc.imageDataUrl}" alt="Incident screenshot"
-               style="max-width:100%;max-height:340px;border-radius:8px;border:1px solid var(--border-mid);cursor:pointer;object-fit:contain"
-               onclick="this.style.maxHeight=this.style.maxHeight==='none'?'340px':'none'" title="Click to expand" />
-          <div class="text-xs text-muted" style="margin-top:0.3rem">Click image to expand / collapse</div>
-        </div>` : ''}
-    </div>
+    body.querySelectorAll('[data-approve]').forEach(btn =>
+      btn.addEventListener('click', () => _runAction(btn.dataset.approve, true)));
+    body.querySelectorAll('[data-reject]').forEach(btn =>
+      btn.addEventListener('click', () => _rejectAction(btn.dataset.reject)));
 
-    <!-- ② Key Evidence ────────────────────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Key Evidence</div>
-      <div class="inv-evidence">
-        ${analysis.evidence.map(e => `
-          <div class="inv-evidence-item">
-            <div class="inv-evidence-bullet"></div>
-            <span>${_esc(e)}</span>
-          </div>`).join('')}
-      </div>
-    </div>
-
-    <!-- ③ Root Cause ───────────────────────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Root Cause</div>
-      <div class="inv-root-cause">${_esc(analysis.rootCause)}</div>
-    </div>
-
-    <!-- ④ Impact ───────────────────────────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Impact</div>
-      <div class="inv-impact-grid">
-        <div class="inv-impact-item">
-          <div class="inv-impact-label">Users Affected</div>
-          <div class="inv-impact-value">${_esc(analysis.impact.users)}</div>
-        </div>
-        <div class="inv-impact-item">
-          <div class="inv-impact-label">Revenue Impact</div>
-          <div class="inv-impact-value">${_esc(analysis.impact.revenue)}</div>
-        </div>
-        <div class="inv-impact-item">
-          <div class="inv-impact-label">SLA Status</div>
-          <div class="inv-impact-value">${_esc(analysis.impact.sla)}</div>
-        </div>
-        <div class="inv-impact-item">
-          <div class="inv-impact-label">Incident Type</div>
-          <div class="inv-impact-value">${_esc(inc.type)}</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ⑤ Step-by-step Resolution Plan ────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Resolution Action Plan</div>
-      <div class="resolution-steps">
-        ${steps.map((step, i) => `
-          <div class="res-step" id="res-step-${inc.id}-${i}">
-            <div class="res-step-num">${i + 1}</div>
-            <div class="res-step-body">
-              <div class="res-step-text">${_esc(step)}</div>
-              ${!isResolved ? `
-                <label class="res-step-check">
-                  <input type="checkbox" onchange="Investigation._toggleStep(this,'${inc.id}',${i})" />
-                  <span>Done</span>
-                </label>` : ''}
-            </div>
-          </div>`).join('')}
-      </div>
-    </div>
-
-    <!-- ⑥ Risk Score ───────────────────────────────── -->
-    <div class="inv-section">
-      <div class="inv-section-title">Risk Score</div>
-      <div class="risk-row">
-        <span style="font-size:0.85rem;font-weight:700;color:${riskColor};min-width:90px">
-          ${riskLabel} — ${risk}/100
-        </span>
-        <div class="risk-bar-track">
-          <div class="risk-bar-fill" style="width:${risk}%;background:${riskColor}"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ⑦ Resolution note (if resolved) ───────────── -->
-    ${isResolved && inc.resolution ? `
-    <div class="inv-section">
-      <div class="inv-section-title">Resolution Note</div>
-      <div class="inv-summary" style="border-left:3px solid #5a9a5a;background:rgba(90,154,90,0.08)">
-        ${_esc(inc.resolution)}
-      </div>
-      ${inc.mttr ? `<p class="text-xs text-muted" style="margin-top:0.4rem">
-        MTTR: <strong style="color:#b9ccdd">${inc.mttr}</strong>
-      </p>` : ''}
-    </div>` : ''}
-
-    <!-- ⑧ Actions ─────────────────────────────────── -->
-    ${!isResolved ? `
-    <div class="inv-section">
-      <div class="inv-section-title">Update Status</div>
-      <div style="display:flex;flex-direction:column;gap:0.75rem">
-        <textarea id="invResolutionNote" class="input" rows="2"
-          placeholder="Resolution note — summarise what steps you took and what fixed it…"></textarea>
-        <div class="action-bar" style="padding-top:0;border-top:none">
-          ${inc.status === 'Open' ? `
-            <button class="btn btn-ghost btn-sm"
-              onclick="Investigation._setStatus('${inc.id}','Investigating')">
-              Mark Investigating
-            </button>` : ''}
-          <button class="btn btn-success btn-sm"
-            onclick="Investigation._resolve('${inc.id}')">
-            ✓ Mark Resolved
-          </button>
-          <button class="btn btn-danger btn-sm"
-            onclick="Investigation._escalate('${inc.id}')">
-            Escalate
-          </button>
-        </div>
-      </div>
-    </div>` : `
-    <div class="action-bar" style="padding-top:1rem;border-top:1px solid var(--border)">
-      <span class="text-sm text-muted">✓ This incident has been resolved.</span>
-      <button class="btn btn-ghost btn-sm" style="margin-left:auto"
-        onclick="App.closeModal('modal-investigation')">Close</button>
-    </div>`}
-
-    ${!isResolved ? `
-    <div class="action-bar" style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:1rem">
-      <button class="btn btn-ghost btn-sm" style="margin-left:auto"
-        onclick="App.closeModal('modal-investigation')">Close</button>
-    </div>` : ''}`;
+    const resolveBtn = document.getElementById('resolveIncidentBtn');
+    if (resolveBtn && !resolveBtn._bound) {
+      resolveBtn._bound = true;
+      resolveBtn.addEventListener('click', () => _resolveIncident());
+    }
   }
 
-  /* ── Step checkbox toggle ────────────────────────── */
-  function _toggleStep(checkbox, incId, stepIdx) {
-    const stepEl = document.getElementById(`res-step-${incId}-${stepIdx}`);
-    if (!stepEl) return;
-    if (checkbox.checked) {
-      stepEl.style.opacity = '0.5';
-      stepEl.querySelector('.res-step-text').style.textDecoration = 'line-through';
+  /* ── Pipeline bar ───────────────────────────────────────────── */
+  function _pipelineBar(active) {
+    const stages = ['Detect','Investigate','Root Cause','Impact','Plan','Risk Check','Execute','Verify','Resolve'];
+    const keys   = ['detect','investigate','root_cause','impact','plan','risk','execute','verify','resolve'];
+    const ai = keys.indexOf(active);
+    return `<div class="pipeline-flow">${stages.map((s, i) => {
+      const cls = i < ai ? 'done' : i === ai ? 'active' : 'pending';
+      return (i > 0 ? '<span class="pipe-arrow">→</span>' : '') +
+             `<span class="pipe-step ${cls}">${cls === 'done' ? '✓ ' : ''}${s}</span>`;
+    }).join('')}</div>`;
+  }
+
+  function _sec(n, icon, title, content) {
+    return `<div class="inv-section">
+      <div class="inv-section-title"><span class="step-num">${n}</span> ${icon} ${title}</div>
+      ${content}
+    </div>`;
+  }
+
+  /* ── Section content builders ───────────────────────────────── */
+  function _detectHtml(inc) {
+    return `<div class="rca-box" style="background:var(--bg-alt);border-color:var(--border);">
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;font-size:0.82rem;">
+        <div><span style="color:var(--text-muted);font-weight:600;">Title</span><br/>${e(inc.title)}</div>
+        <div><span style="color:var(--text-muted);font-weight:600;">Service</span><br/>${e(inc.service || '—')}</div>
+        <div><span style="color:var(--text-muted);font-weight:600;">Severity</span><br/>${Store.severityBadge(inc.severity)}</div>
+        <div><span style="color:var(--text-muted);font-weight:600;">Type</span><br/>${e(inc.type || '—')}</div>
+        <div><span style="color:var(--text-muted);font-weight:600;">Env</span><br/>${e(inc.environment || '—')}</div>
+        <div><span style="color:var(--text-muted);font-weight:600;">Detected</span><br/>${Store.relativeTime(inc.created_at)}</div>
+      </div>
+      ${inc.description ? `<div style="margin-top:0.65rem;font-size:0.82rem;color:var(--text-secondary);
+        border-top:1px solid var(--border-light);padding-top:0.5rem;">${e(inc.description)}</div>` : ''}
+    </div>`;
+  }
+
+  function _evidenceHtml(rca) {
+    if (!rca.evidence?.length) return '<p class="text-muted">No evidence collected.</p>';
+    return `<div class="evidence-list">${rca.evidence.map(ev =>
+      `<div class="evidence-item">${e(ev)}</div>`).join('')}</div>`;
+  }
+
+  function _rcaHtml(rca) {
+    const pct  = Math.round((rca.confidence || 0) * 100);
+    const shap = (rca.shap_factors || []).slice(0, 4).map(f => `
+      <div class="shap-item">
+        <div class="shap-label"><span>${e(f.feature)}</span><span>${Math.round(f.value * 100)}%</span></div>
+        <div class="shap-bar"><div class="shap-fill" style="width:${Math.round(f.value * 100)}%"></div></div>
+      </div>`).join('');
+    return `<div class="rca-box">
+        <div class="rca-cause">${e(rca.root_cause)}</div>
+        <div class="rca-confidence">AI Confidence: ${pct}%</div>
+        <div class="conf-bar"><div class="conf-fill" style="width:${pct}%"></div></div>
+      </div>
+      ${shap ? `<div class="shap-list" style="margin-top:0.75rem;">${shap}</div>` : ''}`;
+  }
+
+  function _impactHtml(rca) {
+    const blast = rca.blast_radius || [];
+    if (!blast.length) return '<p class="text-muted">No impact data.</p>';
+    const c = { critical: 'var(--risk-high)', high: '#e65100', medium: 'var(--risk-medium)', low: 'var(--risk-low)' };
+    return `<div class="impact-grid">${blast.map(b => `
+      <div class="impact-item">
+        <div class="impact-service">${e(b.service)}</div>
+        <div class="impact-level" style="color:${c[b.level] || '#666'}">
+          ${b.level[0].toUpperCase() + b.level.slice(1)} — ${b.impact}% impact
+        </div>
+      </div>`).join('')}</div>`;
+  }
+
+  function _planHtml(rca) {
+    const steps = rca.resolution_steps || [];
+    if (!steps.length) return '<p class="text-muted">No plan generated.</p>';
+    return `<div class="plan-list">${steps.map((s, i) =>
+      `<div class="plan-item"><span class="plan-num">${i + 1}</span>${e(s)}</div>`).join('')}</div>`;
+  }
+
+  function _riskHtml(score, label) {
+    const isCrit = label === 'Critical';
+    const isHigh = label === 'High';
+    const barCls = (isCrit || isHigh) ? 'risk-bar-high' : label === 'Medium' ? 'risk-bar-medium' : 'risk-bar-low';
+    const lblCls = isCrit ? 'risk-label-critical' : isHigh ? 'risk-label-high' : label === 'Medium' ? 'risk-label-medium' : 'risk-label-low';
+    const icon   = (isCrit || isHigh) ? '🔴' : label === 'Medium' ? '🟡' : '🟢';
+    return `<div class="risk-bar-wrap ${barCls}">
+      <div class="risk-label ${lblCls}">${icon} ${label} Risk
+        <span style="font-weight:400;font-size:0.75rem;color:var(--text-muted)"> — Score: ${score}/100</span>
+      </div>
+      <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${score}%"></div></div>
+    </div>`;
+  }
+
+  /* ── Actions section ────────────────────────────────────────── */
+  function _actionsHtml(rca, inc) {
+    const actions = rca.actions || [];
+    if (!actions.length) return '<p class="text-muted">No AI actions available.</p>';
+    return `<div class="action-list">${actions.map(act => _actionCard(act)).join('')}</div>`;
+  }
+
+  function _actionCard(act) {
+    const autoOk    = Config.shouldAutoExecute(act.risk_level);
+    const isDone    = act.status === 'completed';
+    const isFailed  = act.status === 'failed';
+    const isRunning = act.status === 'running';
+    const isWaiting = act.status === 'awaiting_approval';
+    const isRejected= act.status === 'rejected';
+    const conf      = Math.round((act.confidence || 0.8) * 100);
+
+    let chip = '';
+    if (isDone)      chip = `<span class="status-chip chip-success">✓ Executed</span>`;
+    else if (isFailed)  chip = `<span class="status-chip chip-failed">✗ Failed</span>`;
+    else if (isRunning) chip = `<span class="status-chip chip-running">⟳ Running…</span>`;
+    else if (isWaiting) chip = `<span class="status-chip chip-awaiting">⚠ Awaiting Approval</span>`;
+    else if (isRejected)chip = `<span class="status-chip chip-failed">✗ Rejected</span>`;
+    else if (autoOk)    chip = `<span class="status-chip chip-running">⟳ Queued for auto-exec</span>`;
+
+    let results = '';
+    if (act.execution_result) {
+      results += `<div class="action-row"><span class="action-key">Output</span>
+        <span class="action-val">${e(act.execution_result.output)}</span></div>`;
+    }
+    if (act.verification_result) {
+      const ok = act.verification_result.passed;
+      results += `<div class="action-row"><span class="action-key">Verify</span>
+        <span class="action-val" style="color:${ok ? 'var(--risk-low)' : 'var(--risk-high)'}">
+          ${ok ? '✓' : '✗'} ${e(act.verification_result.message)}</span></div>`;
+    }
+
+    let footer = '';
+    if (isDone && act.verification_result?.passed) {
+      footer = `<div class="auto-execute-box">✅ Auto-executed successfully — metrics recovered.</div>`;
+    } else if (isDone && !act.verification_result?.passed) {
+      footer = `<div class="approval-required-box">⚠ Executed but verification failed.${Config.get('autoRollback') && act.rollback_command ? ' Auto-rollback triggered.' : ''}</div>`;
+    } else if (isFailed) {
+      footer = `<div class="approval-required-box">✗ Execution failed.${Config.get('autoRollback') && act.rollback_command ? ' Auto-rollback triggered.' : ' Manual intervention needed.'}</div>`;
+    } else if (isRejected) {
+      footer = `<div style="color:var(--risk-high);font-size:0.82rem;font-weight:600;">✗ This action was rejected.</div>`;
+    } else if (isRunning) {
+      footer = `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--text-muted);">
+        <span class="spinner"></span> Executing…</div>`;
+    } else if (autoOk) {
+      /* Low/Medium-auto: shown as auto-queued, button to trigger manually if they want */
+      footer = `<div class="auto-execute-box">
+        🤖 ${act.risk_level} risk — will auto-execute (pre-authorised by policy)
+      </div>`;
     } else {
-      stepEl.style.opacity = '1';
-      stepEl.querySelector('.res-step-text').style.textDecoration = 'none';
+      /* High/Critical: hard approval gate */
+      footer = `
+        <div class="approval-required-box">
+          ⚠ <strong>Human Approval Required</strong> —
+          <strong>${act.risk_level} risk</strong> action blocked until a team member approves.
+        </div>
+        <div style="margin-top:0.6rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" data-approve="${act.id}">✓ Approve &amp; Execute</button>
+          <button class="btn btn-danger  btn-sm" data-reject="${act.id}">✗ Reject</button>
+        </div>`;
     }
+
+    return `<div class="action-card" id="action-card-${act.id}">
+      <div class="action-card-head">
+        <div>
+          <div class="action-name">${e(act.name)}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.1rem;">${e(act.description)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+          ${Store.riskBadge(act.risk_level)}${chip}
+        </div>
+      </div>
+      <div class="action-body">
+        <div class="action-row"><span class="action-key">Command</span>
+          <span class="action-cmd">${e(act.command)}</span></div>
+        <div class="action-row"><span class="action-key">Confidence</span>
+          <span class="action-val">${conf}%</span></div>
+        ${act.rollback_command ? `<div class="action-row"><span class="action-key">Rollback</span>
+          <span class="action-cmd">${e(act.rollback_command)}</span></div>` : ''}
+        ${results}
+      </div>
+      <div class="action-footer" id="action-footer-${act.id}">${footer}</div>
+    </div>`;
   }
 
-  /* ── Status actions ──────────────────────────────── */
-  function _setStatus(id, newStatus) {
-    const inc = Store.updateStatus(id, newStatus);
-    if (!inc) return;
-    App.toast(`${id} marked as ${newStatus}.`, 'success');
-    _render(inc);
-    _refreshAll();
-  }
+  /* ── Execute action (called by Approve button) ──────────────── */
+  async function _runAction(actionId, requiresApproval) {
+    if (_executing) { App.toast('Another action is already running.', 'warning'); return; }
+    _executing = true;
+    const action = _currentRCA.actions.find(a => a.id === actionId);
+    if (!action) { _executing = false; return; }
 
-  function _resolve(id) {
-    const noteEl = document.getElementById('invResolutionNote');
-    const note   = noteEl ? noteEl.value.trim() : '';
-    if (!note) {
-      noteEl?.classList.add('error');
-      App.toast('Add a resolution note before marking resolved.', 'warning');
-      noteEl?.focus();
-      return;
+    _setFooterRunning(actionId, requiresApproval ? 'Approved — executing…' : 'Executing…');
+    if (requiresApproval) await API.approveAction(actionId, _currentId);
+    await _delay(1600);
+
+    const result = Store.executeAction(action);
+    const idx = _currentRCA.actions.findIndex(a => a.id === actionId);
+    if (idx !== -1) _currentRCA.actions[idx] = result;
+    const live = Store.getById(_currentId);
+    if (live?._rca) live._rca.actions = _currentRCA.actions;
+
+    _executing = false;
+    _render();
+
+    if (result.verification_result?.passed) {
+      App.toast('✓ Action approved and executed — metrics recovered!', 'success');
+      // Try to auto-resolve if all remaining actions are now done
+      const wasResolved = Store.tryAutoResolve(_currentId);
+      if (wasResolved) {
+        _currentInc = Store.getById(_currentId);
+        App.toast('✅ Incident fully resolved — all actions verified', 'success');
+        _render();
+        if (document.getElementById('page-history')?.classList.contains('active')) History.refresh();
+      }
+    } else if (Config.get('autoRollback') && action.rollback_command) {
+      App.toast('⚠ Verification failed — auto-rollback triggered.', 'warning');
+    } else {
+      App.toast('⚠ Executed but verification failed.', 'warning');
     }
-    noteEl.classList.remove('error');
-    const inc = Store.updateStatus(id, 'Resolved', note);
-    if (!inc) return;
-    App.toast(`✓ ${id} resolved. MTTR: ${inc.mttr}`, 'success', 4000);
-    _render(inc);
-    _refreshAll();
-  }
-
-  function _escalate(id) {
-    const inc = Store.updateStatus(id, 'Investigating');
-    if (!inc) return;
-    App.toast(`${id} escalated — marked Investigating.`, 'warning');
-    _render(inc);
-    _refreshAll();
-  }
-
-  function _refreshAll() {
     Dashboard.refresh();
-    Incidents.refresh();
-    History.refresh();
   }
 
-  function _esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  function _rejectAction(actionId) {
+    const idx = _currentRCA.actions.findIndex(a => a.id === actionId);
+    if (idx !== -1) _currentRCA.actions[idx].status = 'rejected';
+
+    // Build alternative steps from the resolution plan
+    const altSteps = (_currentRCA.resolution_steps || []).slice(0, 3);
+    const altHtml = altSteps.length
+      ? `<div style="margin-top:0.6rem;">
+          <div style="font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-bottom:0.35rem;">
+            Alternative steps:
+          </div>
+          ${altSteps.map((s, i) => `
+            <div style="display:flex;gap:0.5rem;font-size:0.78rem;color:var(--text-secondary);
+                        padding:0.3rem 0;border-bottom:1px solid var(--border-light);">
+              <span style="background:var(--text-muted);color:#fff;min-width:18px;height:18px;
+                           border-radius:50%;font-size:0.68rem;display:flex;align-items:center;
+                           justify-content:center;flex-shrink:0;">${i + 1}</span>
+              ${e(s)}
+            </div>`).join('')}
+        </div>` : '';
+
+    const footer = document.getElementById('action-footer-' + actionId);
+    if (footer) footer.innerHTML = `
+      <div style="color:var(--risk-high);font-size:0.82rem;font-weight:600;margin-bottom:0.25rem;">
+        ✗ Action rejected — will not be executed.
+      </div>
+      <div style="font-size:0.79rem;color:var(--text-muted);">
+        The incident is escalated. Follow the manual steps below or assign to a senior engineer.
+      </div>
+      ${altHtml}`;
+
+    App.toast('Action rejected. See alternative steps in the action card.', 'warning');
   }
 
-  return { open, _setStatus, _resolve, _escalate, _toggleStep };
+  function _setFooterRunning(actionId, msg) {
+    const f = document.getElementById('action-footer-' + actionId);
+    if (f) f.innerHTML = `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--text-muted);">
+      <span class="spinner"></span> ${e(msg)}</div>`;
+    // Also mark the action status so chip updates
+    const act = _currentRCA?.actions?.find(a => a.id === actionId);
+    if (act) act.status = 'running';
+  }
+
+  /* ── Resolve incident ───────────────────────────────────────── */
+  function _resolveFormHtml(inc) {
+    if (inc.status === 'Resolved') return '';
+    return `<div class="inv-section" style="margin-top:1.5rem;padding-top:1.25rem;border-top:1.5px solid var(--border);">
+      <div class="inv-section-title"><span class="step-num">8</span> ✅ Resolve Incident</div>
+      <div class="field" style="margin-bottom:0.75rem;">
+        <label for="resolutionNote">Resolution note</label>
+        <textarea id="resolutionNote" class="input" rows="3"
+          placeholder="Describe what fixed the issue and any follow-up actions…"></textarea>
+      </div>
+      <button class="btn btn-primary" id="resolveIncidentBtn">✓ Mark as Resolved</button>
+    </div>`;
+  }
+
+  function _resolvedHtml(inc) {
+    return `<div class="auto-execute-box">
+      ✅ Resolved ${Store.relativeTime(inc.updated_at)} — MTTR: <strong>${inc.mttr || '—'} min</strong>
+    </div>
+    ${inc.resolution ? `<div style="margin-top:0.5rem;font-size:0.82rem;color:var(--text-secondary);">${e(inc.resolution)}</div>` : ''}`;
+  }
+
+  async function _resolveIncident() {
+    const note = document.getElementById('resolutionNote')?.value.trim() || 'Resolved.';
+    const btn  = document.getElementById('resolveIncidentBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Resolving…'; }
+    await API.resolveIncident(_currentId, note);
+    App.closeModal('modal-investigation');
+    App.toast('Incident resolved ✓', 'success');
+    Dashboard.refresh();
+    if (document.getElementById('page-incidents')?.classList.contains('active')) Incidents.refresh();
+    if (document.getElementById('page-history')?.classList.contains('active'))   History.refresh();
+  }
+
+  /* ── Helpers ─────────────────────────────────────────────────── */
+  function _riskLabel(s) { return s >= 80 ? 'Critical' : s >= 60 ? 'High' : s >= 34 ? 'Medium' : 'Low'; }
+  function _delay(ms)    { return new Promise(r => setTimeout(r, ms)); }
+  function e(s)          { return App.esc ? App.esc(s) : String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  return { open };
 })();
-
-window.Investigation = Investigation;

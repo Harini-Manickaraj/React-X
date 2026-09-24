@@ -1,463 +1,292 @@
 /* ================================================================
-   REACT-X — incidents.js
-   Incident list with inline Mark Complete text box, OCR, filters
+   incidents.js  —  REACT-X
+   Incidents page: list, filters, new incident modal (with OCR
+   image upload), inline mark-complete, export (CSV/JSON/TXT).
    ================================================================ */
-
 const Incidents = (() => {
 
-  let _initialized = false;
-  let _currentImageDataUrl = null;   // holds base64 of attached image
+  let _selectedImage = null; // base64 preview for new incident
 
-  /* ── Init / Refresh ──────────────────────────────────── */
-  function init() {
-    _renderList();
-    if (!_initialized) {
-      _setupForm();
-      _setupImageUpload();
-      _initialized = true;
-    }
-  }
-
+  /* ── Public: refresh the incidents page ─────────────────────── */
   function refresh() {
-    const page = document.getElementById('page-incidents');
-    if (!page || !page.classList.contains('active')) return;
-    _renderList();
+    applyFilters();
   }
 
-  /* ── Render list ─────────────────────────────────────── */
-  function _renderList(overrideList) {
-    const el = document.getElementById('incidentList');
-    if (!el) return;
+  /* ── Filter + render ─────────────────────────────────────────── */
+  function applyFilters() {
+    const search   = (document.getElementById('incidentSearch')?.value || '').toLowerCase();
+    const severity = document.getElementById('incidentSeverityFilter')?.value || '';
+    const status   = document.getElementById('incidentStatusFilter')?.value || '';
 
-    const list = overrideList || _filteredIncidents();
+    let list = Store.getAll().filter(i => i.status !== 'Resolved'); // history page handles resolved
 
-    if (list.length === 0) {
-      el.innerHTML = `
+    if (search)   list = list.filter(i =>
+      i.title.toLowerCase().includes(search) ||
+      (i.service || '').toLowerCase().includes(search) ||
+      (i.description || '').toLowerCase().includes(search)
+    );
+    if (severity) list = list.filter(i => i.severity === severity);
+    if (status)   list = list.filter(i => i.status   === status);
+
+    _renderList(list);
+  }
+
+  function _renderList(incidents) {
+    const container = document.getElementById('incidentList');
+    if (!container) return;
+
+    if (incidents.length === 0) {
+      container.innerHTML = `
         <div class="empty-state">
-          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
-            <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>
-          </svg>
-          <h3>All clear</h3>
-          <p>No incidents match your current filters.</p>
+          <div class="empty-state-icon">🎉</div>
+          <h4>No incidents found</h4>
+          <p>Try adjusting the filters, or create a new incident.</p>
         </div>`;
       return;
     }
 
-    el.innerHTML = list.map(inc => _incidentRowHTML(inc)).join('');
+    container.innerHTML = `<div class="section-card">${incidents.map(_incidentRow).join('')}</div>`;
   }
 
-  function _incidentRowHTML(inc) {
-    const isResolved = inc.status === 'Resolved';
-    const resolvedStyle = isResolved ? 'opacity:0.7;' : '';
-
+  function _incidentRow(inc) {
+    const ago = Store.relativeTime(inc.created_at);
     return `
-    <div class="incident-row${isResolved ? ' incident-resolved' : ''}" style="${resolvedStyle}">
-      <!-- Left: title + meta -->
-      <div class="inc-left" onclick="${isResolved ? '' : `Investigation.open('${inc.id}')`}"
-           style="${isResolved ? '' : 'cursor:pointer'}">
-        <div class="inc-title">
-          ${isResolved ? '<span class="inc-resolved-tick">✓</span> ' : ''}${_esc(inc.title)}
-        </div>
-        <div class="inc-meta">
-          ${App.severityBadge(inc.severity)}
-          ${App.statusBadge(inc.status)}
-          ${inc.service ? `<span>${_esc(inc.service)}</span>` : ''}
-          <span>${_esc(inc.environment)}</span>
-          <span>${_esc(inc.type)}</span>
-        </div>
-        ${isResolved && inc.resolution ? `
-          <div class="inc-resolution-preview">
-            <span class="inc-resolution-label">Resolution:</span>
-            ${_esc(inc.resolution)}
-            ${inc.mttr ? `<span class="inc-mttr">· MTTR: ${inc.mttr}</span>` : ''}
-          </div>` : ''}
-      </div>
-
-      <!-- Right: time + actions -->
-      <div class="inc-right">
-        <span class="inc-time">${App.formatTime(isResolved ? inc.resolvedAt : inc.createdAt)}</span>
-
-        ${!isResolved ? `
-          <!-- Investigate button -->
-          <button class="btn btn-sm btn-ghost"
-            onclick="Investigation.open('${inc.id}')">Investigate</button>
-
-          <!-- ── Mark Complete inline panel ── -->
-          <div class="mark-complete-wrap" id="mc-wrap-${inc.id}">
-            <button class="btn btn-sm btn-success"
-              onclick="Incidents.showCompleteBox('${inc.id}')">
-              ✓ Mark Complete
-            </button>
-            <!-- Hidden text box — shown on click -->
-            <div class="complete-box" id="mc-box-${inc.id}" style="display:none">
-              <textarea
-                id="mc-note-${inc.id}"
-                class="input complete-textarea"
-                rows="2"
-                placeholder="What was done to fix this? (required)"></textarea>
-              <div class="complete-box-actions">
-                <button class="btn btn-sm btn-ghost"
-                  onclick="Incidents.hideCompleteBox('${inc.id}')">Cancel</button>
-                <button class="btn btn-sm btn-success"
-                  onclick="Incidents.submitComplete('${inc.id}')">Confirm Resolved</button>
-              </div>
-            </div>
+      <div class="incident-item" id="inc-row-${inc.id}">
+        <div class="inc-left">
+          <div class="inc-title">${_esc(inc.title)}</div>
+          <div class="inc-meta">
+            ${Store.severityBadge(inc.severity)}
+            ${Store.statusBadge(inc.status)}
+            <span class="sep">·</span>
+            <span>${_esc(inc.type || '—')}</span>
+            <span class="sep">·</span>
+            <span>${_esc(inc.service || '—')}</span>
+            <span class="sep">·</span>
+            <span>${_esc(inc.environment || '—')}</span>
+            <span class="sep">·</span>
+            <span title="${_esc(inc.created_at)}">${ago}</span>
           </div>
-        ` : `
-          <span class="resolved-label">Resolved</span>
-        `}
-      </div>
-    </div>`;
+        </div>
+        <div class="inc-actions">
+          <button class="btn btn-ghost btn-sm"
+            onclick="Investigation.open('${inc.id}')">
+            Investigate
+          </button>
+          <button class="btn btn-primary btn-sm"
+            onclick="Incidents.openMarkComplete('${inc.id}')">
+            Mark Complete
+          </button>
+        </div>
+      </div>`;
   }
 
-  /* ── Mark Complete flow ───────────────────────────────── */
-  function showCompleteBox(id) {
-    // Hide all other open boxes first
-    document.querySelectorAll('.complete-box').forEach(b => b.style.display = 'none');
-    const box = document.getElementById(`mc-box-${id}`);
-    if (box) {
-      box.style.display = 'block';
-      document.getElementById(`mc-note-${id}`)?.focus();
-    }
-  }
+  /* ── New Incident Modal ──────────────────────────────────────── */
+  function openNewIncidentModal(prefill = {}) {
+    // Reset form
+    const form = document.getElementById('newIncidentForm');
+    if (form) form.reset();
+    _selectedImage = null;
+    _resetImagePreview();
+    _clearNewErrors();
 
-  function hideCompleteBox(id) {
-    const box = document.getElementById(`mc-box-${id}`);
-    if (box) box.style.display = 'none';
-    const note = document.getElementById(`mc-note-${id}`);
-    if (note) note.value = '';
-  }
+    // Apply OCR prefill if provided
+    if (prefill.title)       document.getElementById('incTitle').value       = prefill.title;
+    if (prefill.description) document.getElementById('incDescription').value = prefill.description;
+    if (prefill.severity)    document.getElementById('incSeverity').value    = prefill.severity;
 
-  function submitComplete(id) {
-    const noteEl = document.getElementById(`mc-note-${id}`);
-    const note = noteEl ? noteEl.value.trim() : '';
-    if (!note) {
-      noteEl?.classList.add('error');
-      noteEl?.setAttribute('placeholder', 'Please describe what was done to fix this.');
-      App.toast('Enter a resolution note before marking complete.', 'warning');
-      return;
-    }
-    noteEl?.classList.remove('error');
-
-    const inc = Store.updateStatus(id, 'Resolved', note);
-    if (!inc) { App.toast('Incident not found.', 'error'); return; }
-
-    App.toast(`✓ ${inc.id} marked complete. MTTR: ${inc.mttr}`, 'success', 4000);
-    _renderList();
-    Dashboard.refresh();
-    History.refresh();
-  }
-
-  /* ── Filters ─────────────────────────────────────────── */
-  function _filteredIncidents() {
-    const q    = (document.getElementById('incidentSearch')?.value   || '').toLowerCase();
-    const sev  =  document.getElementById('incidentSeverityFilter')?.value || '';
-    const stat =  document.getElementById('incidentStatusFilter')?.value   || '';
-
-    // Show ALL incidents including resolved so user can see their completed ones
-    return Store.getAll()
-      .sort((a, b) => {
-        // Open/Investigating first, then Resolved
-        const order = { Open: 0, Investigating: 1, Resolved: 2 };
-        if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
-        return new Date(b.createdAt) - new Date(a.createdAt);
-      })
-      .filter(inc => {
-        const matchQ    = !q    || inc.title.toLowerCase().includes(q)
-                                || (inc.service||'').toLowerCase().includes(q)
-                                || inc.description.toLowerCase().includes(q);
-        const matchSev  = !sev  || inc.severity === sev;
-        const matchStat = !stat || inc.status === stat;
-        return matchQ && matchSev && matchStat;
-      });
-  }
-
-  function applyFilters() { _renderList(); }
-
-  /* ── Export ──────────────────────────────────────────── */
-  function toggleExportMenu() {
-    const menu = document.getElementById('incExportMenu');
-    if (!menu) return;
-    const isOpen = menu.style.display !== 'none';
-    menu.style.display = isOpen ? 'none' : 'block';
-    // Close when clicking outside
-    if (!isOpen) {
-      setTimeout(() => {
-        document.addEventListener('click', _closeExportOnOutside, { once: true });
-      }, 0);
-    }
-  }
-
-  function _closeExportOnOutside(e) {
-    const dropdown = document.getElementById('incExportDropdown');
-    if (dropdown && !dropdown.contains(e.target)) {
-      const menu = document.getElementById('incExportMenu');
-      if (menu) menu.style.display = 'none';
-    }
-  }
-
-  function exportAs(format) {
-    // Close menu
-    const menu = document.getElementById('incExportMenu');
-    if (menu) menu.style.display = 'none';
-
-    const list = _filteredIncidents();
-    if (list.length === 0) {
-      App.toast('No incidents to export with current filters.', 'warning');
-      return;
+    // Bind submit (once)
+    const btn = document.getElementById('createIncidentBtn');
+    if (btn && !btn._bound) {
+      btn._bound = true;
+      form.addEventListener('submit', _handleCreate);
     }
 
-    const now       = new Date().toISOString().slice(0, 16).replace('T', '_').replace(/:/g, '-');
-    const filename  = `react-x-incidents_${now}`;
-    const q         = (document.getElementById('incidentSearch')?.value || '').trim();
-    const sev       = document.getElementById('incidentSeverityFilter')?.value || '';
-    const stat      = document.getElementById('incidentStatusFilter')?.value   || '';
-    const filterDesc = [
-      q    ? `search:"${q}"` : '',
-      sev  ? `severity:${sev}`  : '',
-      stat ? `status:${stat}`   : ''
-    ].filter(Boolean).join(', ') || 'all';
+    // Bind image upload zone
+    _bindImageUpload();
 
-    if (format === 'csv')  _exportCSV(list,  filename, filterDesc);
-    if (format === 'json') _exportJSON(list, filename, filterDesc);
-    if (format === 'txt')  _exportTXT(list,  filename, filterDesc);
-  }
-
-  function _exportCSV(list, filename, filterDesc) {
-    const headers = ['ID','Title','Severity','Status','Type','Service','Environment','Created','Updated','Resolved','MTTR','Description','Resolution','Created By'];
-    const rows = list.map(i => [
-      i.id,
-      `"${(i.title||'').replace(/"/g,'""')}"`,
-      i.severity,
-      i.status,
-      i.type,
-      i.service || '',
-      i.environment,
-      _fmtDate(i.createdAt),
-      _fmtDate(i.updatedAt),
-      i.resolvedAt ? _fmtDate(i.resolvedAt) : '',
-      i.mttr || '',
-      `"${(i.description||'').replace(/"/g,'""').replace(/\n/g,' ')}"`,
-      `"${(i.resolution||'').replace(/"/g,'""')}"`,
-      i.createdBy || ''
-    ].join(','));
-
-    const meta = `# REACT-X Incident Export\n# Generated: ${new Date().toLocaleString()}\n# Filters: ${filterDesc}\n# Total: ${list.length} records\n\n`;
-    _download(meta + headers.join(',') + '\n' + rows.join('\n'), filename + '.csv', 'text/csv');
-    App.toast(`Exported ${list.length} incidents as CSV`, 'success');
-  }
-
-  function _exportJSON(list, filename, filterDesc) {
-    const payload = {
-      meta: {
-        source:    'REACT-X Incident Management',
-        exported:  new Date().toISOString(),
-        filters:   filterDesc,
-        total:     list.length
-      },
-      incidents: list.map(i => ({
-        id:          i.id,
-        title:       i.title,
-        severity:    i.severity,
-        status:      i.status,
-        type:        i.type,
-        service:     i.service || null,
-        environment: i.environment,
-        description: i.description,
-        resolution:  i.resolution || null,
-        mttr:        i.mttr       || null,
-        createdBy:   i.createdBy,
-        createdAt:   i.createdAt,
-        updatedAt:   i.updatedAt,
-        resolvedAt:  i.resolvedAt || null
-      }))
-    };
-    _download(JSON.stringify(payload, null, 2), filename + '.json', 'application/json');
-    App.toast(`Exported ${list.length} incidents as JSON`, 'success');
-  }
-
-  function _exportTXT(list, filename, filterDesc) {
-    const divider = '─'.repeat(72);
-    let txt = `REACT-X — Incident Export Report\n`;
-    txt    += `Generated : ${new Date().toLocaleString()}\n`;
-    txt    += `Filters   : ${filterDesc}\n`;
-    txt    += `Total     : ${list.length} record${list.length !== 1 ? 's' : ''}\n`;
-    txt    += `${divider}\n\n`;
-
-    list.forEach((i, idx) => {
-      txt += `[${idx + 1}] ${i.id}\n`;
-      txt += `Title       : ${i.title}\n`;
-      txt += `Severity    : ${i.severity}\n`;
-      txt += `Status      : ${i.status}\n`;
-      txt += `Type        : ${i.type}\n`;
-      txt += `Service     : ${i.service || '—'}\n`;
-      txt += `Environment : ${i.environment}\n`;
-      txt += `Created     : ${_fmtDate(i.createdAt)}  by ${i.createdBy}\n`;
-      if (i.resolvedAt) {
-        txt += `Resolved    : ${_fmtDate(i.resolvedAt)}\n`;
-        txt += `MTTR        : ${i.mttr || '—'}\n`;
-      }
-      txt += `Description :\n  ${(i.description||'').replace(/\n/g,'\n  ')}\n`;
-      if (i.resolution) txt += `Resolution  :\n  ${i.resolution.replace(/\n/g,'\n  ')}\n`;
-      txt += `${divider}\n\n`;
-    });
-
-    _download(txt, filename + '.txt', 'text/plain');
-    App.toast(`Exported ${list.length} incidents as plain text`, 'success');
-  }
-
-  function _download(content, filename, mime) {
-    const blob = new Blob([content], { type: mime });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href     = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  function _fmtDate(iso) {
-    if (!iso) return '';
-    return new Date(iso).toLocaleString('en-GB', {
-      day:'2-digit', month:'short', year:'numeric',
-      hour:'2-digit', minute:'2-digit'
-    });
-  }
-
-  /* ── New incident modal ───────────────────────────────── */
-  function openNewIncidentModal(e, highlightId) {
-    if (e && e.preventDefault) e.preventDefault();
-    document.getElementById('newIncidentForm')?.reset();
-    _clearFormErrors();
-    _resetImage();
     App.openModal('modal-new-incident');
-
-    if (highlightId) {
-      const inc = Store.getById(highlightId);
-      if (inc) {
-        _setField('incTitle',       inc.title);
-        _setField('incSeverity',    inc.severity);
-        _setField('incType',        inc.type);
-        _setField('incService',     inc.service);
-        _setField('incEnvironment', inc.environment);
-        _setField('incDescription', inc.description);
-      }
-    }
   }
 
-  /* ── Form submit ─────────────────────────────────────── */
-  function _setupForm() {
-    document.getElementById('newIncidentForm')?.addEventListener('submit', e => {
-      e.preventDefault();
-      _clearFormErrors();
+  async function _handleCreate(e) {
+    e.preventDefault();
+    _clearNewErrors();
 
-      const title       = document.getElementById('incTitle')?.value.trim()       || '';
-      const severity    = document.getElementById('incSeverity')?.value           || '';
-      const type        = document.getElementById('incType')?.value               || 'Other';
-      const service     = document.getElementById('incService')?.value.trim()     || '';
-      const environment = document.getElementById('incEnvironment')?.value        || 'Production';
-      const description = document.getElementById('incDescription')?.value.trim() || '';
+    const title       = document.getElementById('incTitle').value.trim();
+    const severity    = document.getElementById('incSeverity').value;
+    const type        = document.getElementById('incType').value;
+    const service     = document.getElementById('incService').value.trim();
+    const environment = document.getElementById('incEnvironment').value;
+    const description = document.getElementById('incDescription').value.trim();
 
-      let valid = true;
-      if (!title)       { _setError('incTitleError',       'Title is required.');            valid = false; }
-      if (!severity)    { _setError('incSeverityError',    'Select a severity level.');      valid = false; }
-      if (!description) { _setError('incDescriptionError', 'Describe the incident.');        valid = false; }
-      if (!valid) return;
+    let valid = true;
+    if (!title)    { document.getElementById('incTitleError').textContent = 'Title is required.';           valid = false; }
+    if (!severity) { document.getElementById('incSeverityError').textContent = 'Select a severity level.'; valid = false; }
+    if (!description) { document.getElementById('incDescriptionError').textContent = 'Description is required.'; valid = false; }
+    if (!valid) return;
 
-      const user = App.getUser();
-      const inc  = Store.createIncident({
-        title, severity, type, service, environment, description,
-        createdBy: user ? user.name : 'User',
-        imageDataUrl: _currentImageDataUrl || null
-      });
+    const btn = document.getElementById('createIncidentBtn');
+    btn.disabled = true; btn.textContent = 'Creating…';
 
-      App.closeModal('modal-new-incident');
-      _resetImage();
-      App.toast(`Incident ${inc.id} created`, 'success');
-      App.navigateTo('incidents');
-      setTimeout(() => Investigation.open(inc.id), 300);
-    });
+    const res = await API.createIncident({ title, severity, type, service, environment, description });
+
+    btn.disabled = false; btn.textContent = 'Create Incident';
+
+    if (!res.ok) { App.toast('Failed to create incident.', 'error'); return; }
+
+    App.closeModal('modal-new-incident');
+    App.toast('Incident created.', 'success');
+
+    // Refresh whichever page is active
+    if (document.getElementById('page-incidents')?.classList.contains('active')) refresh();
+    Dashboard.refresh();
   }
 
-  /* ── Image Upload ────────────────────────────────────── */
-  function _setupImageUpload() {
-    const zone  = document.getElementById('imgUploadZone');
-    const input = document.getElementById('incImageFile');
-    if (!zone || !input || zone._imgBound) return;
-    zone._imgBound = true;
+  /* ── Image upload in modal ───────────────────────────────────── */
+  function _bindImageUpload() {
+    const zone   = document.getElementById('imgUploadZone');
+    const fileIn = document.getElementById('incImageFile');
+    if (!zone || !fileIn) return;
 
-    // File input change
-    input.addEventListener('change', () => {
-      if (input.files?.[0]) _loadImage(input.files[0]);
-    });
+    // Remove old listeners by cloning
+    const newZone = zone.cloneNode(true);
+    zone.parentNode.replaceChild(newZone, zone);
+    const newFileIn = document.getElementById('incImageFile');
 
-    // Drag & drop
-    zone.addEventListener('dragover', e => {
-      e.preventDefault();
-      zone.classList.add('drag-over');
+    newZone.addEventListener('click', e => {
+      if (!e.target.classList.contains('img-browse-link')) newFileIn.click();
     });
-    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-    zone.addEventListener('drop', e => {
-      e.preventDefault();
-      zone.classList.remove('drag-over');
-      const file = e.dataTransfer.files?.[0];
-      if (file && file.type.startsWith('image/')) _loadImage(file);
-      else App.toast('Please drop an image file.', 'warning');
+    newZone.addEventListener('dragover', e => { e.preventDefault(); newZone.style.borderColor = 'var(--accent)'; });
+    newZone.addEventListener('dragleave', () => { newZone.style.borderColor = ''; });
+    newZone.addEventListener('drop', e => {
+      e.preventDefault(); newZone.style.borderColor = '';
+      const file = e.dataTransfer.files[0];
+      if (file) _previewImage(file);
+    });
+    newFileIn.addEventListener('change', e => {
+      if (e.target.files[0]) _previewImage(e.target.files[0]);
     });
   }
 
-  function _loadImage(file) {
-    const MAX = 5 * 1024 * 1024; // 5 MB
-    if (file.size > MAX) {
-      App.toast('Image too large — max 5 MB.', 'error');
-      return;
-    }
+  function _previewImage(file) {
+    if (file.size > 5 * 1024 * 1024) { App.toast('Image must be under 5 MB.', 'error'); return; }
     const reader = new FileReader();
-    reader.onload = e => {
-      _currentImageDataUrl = e.target.result;
-      // Show preview
-      const preview  = document.getElementById('imgPreview');
-      const wrap     = document.getElementById('imgPreviewWrap');
-      const ph       = document.getElementById('imgPlaceholder');
-      const meta     = document.getElementById('imgPreviewMeta');
-      if (preview)  preview.src = _currentImageDataUrl;
-      if (wrap)     wrap.style.display = 'flex';
-      if (ph)       ph.style.display   = 'none';
-      if (meta)     meta.textContent   = `${file.name}  ·  ${(file.size / 1024).toFixed(0)} KB`;
-      App.toast('Image attached.', 'success', 2500);
+    reader.onload = ev => {
+      _selectedImage = ev.target.result;
+      const preview = document.getElementById('imgPreview');
+      const wrap    = document.getElementById('imgPreviewWrap');
+      const ph      = document.getElementById('imgPlaceholder');
+      const meta    = document.getElementById('imgPreviewMeta');
+      if (preview) preview.src = _selectedImage;
+      if (wrap)    wrap.style.display = 'block';
+      if (ph)      ph.style.display   = 'none';
+      if (meta)    meta.textContent   = `${file.name} — ${(file.size / 1024).toFixed(0)} KB`;
     };
     reader.readAsDataURL(file);
   }
 
   function removeImage() {
-    _currentImageDataUrl = null;
-    const input   = document.getElementById('incImageFile');
-    const preview = document.getElementById('imgPreview');
-    const wrap    = document.getElementById('imgPreviewWrap');
-    const ph      = document.getElementById('imgPlaceholder');
-    if (input)   input.value  = '';
-    if (preview) preview.src  = '';
-    if (wrap)    wrap.style.display = 'none';
-    if (ph)      ph.style.display   = 'flex';
+    _selectedImage = null;
+    _resetImagePreview();
   }
 
-  function _resetImage() {
-    removeImage();
+  function _resetImagePreview() {
+    const wrap = document.getElementById('imgPreviewWrap');
+    const ph   = document.getElementById('imgPlaceholder');
+    const prev = document.getElementById('imgPreview');
+    if (wrap) wrap.style.display = 'none';
+    if (ph)   ph.style.display   = '';
+    if (prev) prev.src = '';
   }
-  function _setField(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
-  function _setError(id, m) { const el = document.getElementById(id); if (el) el.textContent = m; }
-  function _clearFormErrors() {
+
+  function _clearNewErrors() {
     ['incTitleError','incSeverityError','incDescriptionError'].forEach(id => {
-      const el = document.getElementById(id); if (el) el.textContent = '';
+      const el = document.getElementById(id);
+      if (el) el.textContent = '';
     });
   }
-  function _esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  /* ── Mark Complete (inline resolve) ─────────────────────────── */
+  function openMarkComplete(id) {
+    const inc = Store.getById(id);
+    if (!inc) return;
+
+    // Build a simple inline note prompt using a custom small modal approach
+    const note = window.prompt(
+      `Resolve "${inc.title}"\n\nEnter a short resolution note (optional):`,
+      'Resolved by on-call engineer.'
+    );
+    if (note === null) return; // cancelled
+
+    API.resolveIncident(id, note || 'Resolved.').then(() => {
+      App.toast('Incident resolved ✓', 'success');
+      refresh();
+      Dashboard.refresh();
+    });
   }
 
-  return { init, refresh, applyFilters, openNewIncidentModal, showCompleteBox, hideCompleteBox, submitComplete, toggleExportMenu, exportAs, removeImage };
-})();
+  /* ── Export ──────────────────────────────────────────────────── */
+  function toggleExportMenu() {
+    const menu = document.getElementById('incExportMenu');
+    if (menu) menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+  }
 
-window.Incidents = Incidents;
+  // Close export menu when clicking outside
+  document.addEventListener('click', e => {
+    const dd = document.getElementById('incExportDropdown');
+    if (dd && !dd.contains(e.target)) {
+      const menu = document.getElementById('incExportMenu');
+      if (menu) menu.style.display = 'none';
+    }
+  });
+
+  function exportAs(format) {
+    const search   = (document.getElementById('incidentSearch')?.value || '').toLowerCase();
+    const severity = document.getElementById('incidentSeverityFilter')?.value || '';
+    const status   = document.getElementById('incidentStatusFilter')?.value || '';
+
+    let list = Store.getAll().filter(i => i.status !== 'Resolved');
+    if (search)   list = list.filter(i => i.title.toLowerCase().includes(search));
+    if (severity) list = list.filter(i => i.severity === severity);
+    if (status)   list = list.filter(i => i.status === status);
+
+    if (list.length === 0) { App.toast('No incidents match current filters.', 'warning'); return; }
+
+    let content, filename, mime;
+
+    if (format === 'csv') {
+      const headers = ['id','title','severity','type','service','environment','status','created_at'];
+      const rows = list.map(i => headers.map(h => `"${String(i[h] || '').replace(/"/g, '""')}"`).join(','));
+      content  = [headers.join(','), ...rows].join('\n');
+      filename = 'incidents.csv'; mime = 'text/csv';
+
+    } else if (format === 'json') {
+      content  = JSON.stringify(list, null, 2);
+      filename = 'incidents.json'; mime = 'application/json';
+
+    } else {
+      content  = list.map(i =>
+        `[${i.severity}] ${i.title}\n  Service: ${i.service || '—'}  |  Status: ${i.status}  |  Created: ${new Date(i.created_at).toLocaleString()}\n  ${i.description || ''}\n`
+      ).join('\n---\n\n');
+      filename = 'incidents.txt'; mime = 'text/plain';
+    }
+
+    const blob = new Blob([content], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+
+    toggleExportMenu();
+    App.toast(`Exported ${list.length} incidents as ${format.toUpperCase()}.`, 'success');
+  }
+
+  /* ── Helpers ─────────────────────────────────────────────────── */
+  function _esc(str) { return App.esc ? App.esc(str) : String(str || '').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  return {
+    refresh, applyFilters,
+    openNewIncidentModal, removeImage,
+    openMarkComplete,
+    toggleExportMenu, exportAs
+  };
+})();

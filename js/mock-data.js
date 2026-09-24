@@ -1,464 +1,581 @@
 /* ================================================================
-   REACT-X — Mock Data Store
-   Single source of truth for all incident/user data.
-   In a real app this would be replaced by API calls.
+   mock-data.js  —  REACT-X
+   Central in-memory data store + seed incidents + live signal gen.
+   All modules read/write through Store.*
    ================================================================ */
-
 const Store = (() => {
 
-  /* ── helpers ── */
-  let _nextId = 3000;
-  const newId  = () => `INC-${++_nextId}`;
-  const nowISO = () => new Date().toISOString();
-  const minsAgo = n => new Date(Date.now() - n * 60000).toISOString();
-  const hrsAgo  = n => new Date(Date.now() - n * 3600000).toISOString();
-  const daysAgo = n => new Date(Date.now() - n * 86400000).toISOString();
+  /* ── helpers ─────────────────────────────────────────────────── */
+  function uid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+  }
+  function ago(minutes) {
+    return new Date(Date.now() - minutes * 60 * 1000).toISOString();
+  }
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+           ' · ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
 
-  /* ── change listeners ── */
-  const _listeners = [];
-  const _emit = (event, payload) => _listeners.forEach(fn => fn(event, payload));
+  /* ── AI action templates ─────────────────────────────────────── */
+  const ACTION_TEMPLATES = {
+    'disk_check': {
+      name: 'Check Disk Usage',
+      command: 'df -h / && du -sh /var/log/*',
+      rollback: null,
+      description: 'Scan disk usage across volumes and identify largest consumers.'
+    },
+    'log_cleanup': {
+      name: 'Clean Temporary Logs',
+      command: 'find /var/log -name "*.log" -mtime +7 -delete && journalctl --vacuum-time=7d',
+      rollback: null,
+      description: 'Remove log files older than 7 days to reclaim disk space.'
+    },
+    'service_restart': {
+      name: 'Restart Service',
+      command: 'systemctl restart {service} && systemctl status {service}',
+      rollback: 'systemctl stop {service}',
+      description: 'Gracefully restart the affected service and verify it comes back healthy.'
+    },
+    'scale_up': {
+      name: 'Scale Up Service',
+      command: 'kubectl scale deployment/{service} --replicas=4',
+      rollback: 'kubectl scale deployment/{service} --replicas=2',
+      description: 'Increase pod count to absorb elevated load and reduce latency.'
+    },
+    'rollback_deployment': {
+      name: 'Rollback Deployment',
+      command: 'kubectl rollout undo deployment/{service}',
+      rollback: 'kubectl rollout undo deployment/{service} --to-revision=0',
+      description: 'Roll the deployment back to the previous known-good revision.'
+    },
+    'db_connection_pool': {
+      name: 'Expand Connection Pool',
+      command: 'psql -c "ALTER SYSTEM SET max_connections = 200;" && pg_reload_conf()',
+      rollback: 'psql -c "ALTER SYSTEM SET max_connections = 100;" && pg_reload_conf()',
+      description: 'Increase the database connection pool to resolve connection exhaustion.'
+    }
+  };
 
-  /* ── user store (mock auth) ── */
-  const _users = [
-    { email: 'admin@company.com', name: 'Admin User',    password: 'admin123' },
-    { email: 'jane@company.com',  name: 'Jane Smith',    password: 'pass123'  }
-  ];
-
-  /* ── investigation templates ── */
-  const _analysisMap = {
+  /* ── RCA templates keyed by incident type ───────────────────── */
+  const RCA_TEMPLATES = {
     'Performance': {
+      root_cause: 'CPU and memory saturation caused by unbounded query execution on the primary database replica.',
+      confidence: 0.91,
       evidence: [
-        'CPU utilization reached 95% for over 8 minutes before alert fired',
-        'Query execution times increased 12× above baseline',
-        'Connection pool exhausted — 512 / 512 connections in use',
-        'Slow-query log shows 3 long-running transactions (>30 s) on payments table'
+        'CPU usage peaked at 98% for 12+ minutes',
+        'Query execution time exceeded 30 seconds on 847 requests',
+        'Connection pool exhausted — 200/200 slots occupied',
+        'No indexes found on the frequently queried columns'
       ],
-      rootCause: 'A missing index on the payments table combined with a spike in concurrent writes caused a query lock chain. Long-running transactions held row-level locks, blocking subsequent reads and exhausting the connection pool.',
-      recommendation: 'Immediate: kill the long-running queries to release locks. Short-term: add a composite index on (account_id, created_at). Long-term: review connection pool sizing and add query timeout limits at the application layer.',
-      impactUsers: 'All users', impactRevenue: 'High', impactSLA: 'Breached'
+      shap_factors: [
+        { feature: 'CPU utilisation', value: 0.87, direction: 'positive' },
+        { feature: 'Query count spike', value: 0.74, direction: 'positive' },
+        { feature: 'Missing index', value: 0.68, direction: 'positive' },
+        { feature: 'Connection pool size', value: 0.52, direction: 'positive' }
+      ],
+      actions: ['disk_check', 'db_connection_pool', 'service_restart'],
+      action_risks: ['Low', 'Medium', 'Low'],
+      plan: [
+        'Run disk check to verify storage capacity',
+        'Expand connection pool to 200 connections',
+        'Restart the database service to clear stale connections',
+        'Add index on the hot query column',
+        'Monitor CPU usage over the next 15 minutes'
+      ]
     },
     'Availability': {
+      root_cause: 'Service crash-loop triggered by an out-of-memory event after a recent deployment with an unconstrained worker thread pool.',
+      confidence: 0.88,
       evidence: [
-        'Service returning HTTP 503 for 100% of requests since 14:22 UTC',
-        'Health-check endpoint not responding for 3 consecutive checks',
-        'Load balancer removed all 4 backend instances from rotation',
-        'No deployment or config change in the 2 hours prior'
+        'OOMKilled events logged in container runtime',
+        'Service restarted 7 times in the past 30 minutes',
+        'Memory limit of 512 MB exceeded — peak at 680 MB',
+        'Deployment v3.4.1 pushed 45 minutes before incident'
       ],
-      rootCause: 'All service pods entered a crash-loop due to an OOM (out-of-memory) condition. Memory usage grew steadily over 6 hours until the container limit was hit, triggering restarts that prevented the service from recovering.',
-      recommendation: 'Immediate: increase container memory limit to stop the crash loop and restore service. Short-term: identify and fix the memory leak (heap profiling recommended). Long-term: add memory usage alerts at 75% threshold.',
-      impactUsers: 'All users', impactRevenue: 'Critical', impactSLA: 'Breached'
+      shap_factors: [
+        { feature: 'Restart count', value: 0.92, direction: 'positive' },
+        { feature: 'Memory over-limit', value: 0.83, direction: 'positive' },
+        { feature: 'Recent deployment', value: 0.71, direction: 'positive' },
+        { feature: 'Pod age', value: 0.44, direction: 'negative' }
+      ],
+      actions: ['service_restart', 'rollback_deployment', 'log_cleanup'],
+      action_risks: ['Low', 'High', 'Low'],
+      plan: [
+        'Restart the affected service pod',
+        'If restart fails, roll back to previous deployment',
+        'Clean up accumulated logs to free memory pressure',
+        'Set memory limit to 1 GB in deployment manifest',
+        'Verify service health via readiness probe'
+      ]
     },
     'Network': {
+      root_cause: 'Intermittent DNS resolution failures caused by stale cache entries after a network policy update.',
+      confidence: 0.79,
       evidence: [
-        'API timeout rate increased from 0.2% to 38% within 5 minutes',
-        'p99 response time: 4 800 ms vs baseline of 180 ms',
-        'Upstream dependency (payment-gateway) showing elevated latency',
-        'Retries amplifying load — 3× normal request volume observed'
+        'DNS resolution latency increased to 2400 ms (normal: 12 ms)',
+        'Network policy updated 2 hours ago',
+        'Packet loss at 8.3% on inter-service communication',
+        '14 timeout errors logged per minute'
       ],
-      rootCause: 'The upstream payment gateway experienced a regional slowdown. Client-side retry logic with no backoff multiplied the load, causing a self-reinforcing timeout storm across dependent services.',
-      recommendation: 'Immediate: enable circuit breaker on the payment-gateway client. Short-term: add exponential backoff with jitter to all retry logic. Long-term: implement timeout budgets and fallback responses for non-critical payment paths.',
-      impactUsers: 'Checkout users', impactRevenue: 'High', impactSLA: 'At risk'
+      shap_factors: [
+        { feature: 'DNS latency', value: 0.81, direction: 'positive' },
+        { feature: 'Packet loss rate', value: 0.66, direction: 'positive' },
+        { feature: 'Policy change age', value: 0.55, direction: 'positive' },
+        { feature: 'Retry rate', value: 0.42, direction: 'positive' }
+      ],
+      actions: ['service_restart', 'log_cleanup'],
+      action_risks: ['Low', 'Low'],
+      plan: [
+        'Flush DNS cache on all affected nodes',
+        'Restart the network-dependent service',
+        'Review and revert the recent network policy change',
+        'Monitor packet loss rate until below 0.5%'
+      ]
     },
     'Security': {
+      root_cause: 'Brute-force attack on the authentication endpoint causing account lockouts and elevated error rates.',
+      confidence: 0.95,
       evidence: [
-        '4 200 failed login attempts from 18 distinct IP addresses in 10 minutes',
-        'All attempts targeting 3 high-privilege accounts',
-        'Geographic anomaly: requests originating from unusual regions',
-        'No successful logins recorded in the affected window'
+        '4,200 failed login attempts in 10 minutes from 3 IPs',
+        'Auth service error rate at 67% (normal: 0.2%)',
+        'IPs flagged in threat intelligence feed',
+        'JWT signing key not rotated in 180 days'
       ],
-      rootCause: 'A credential-stuffing attack used a list of leaked username/password pairs to attempt account takeover. The rate limiter was configured with a threshold too high to catch distributed low-rate attempts.',
-      recommendation: 'Immediate: temporarily block the 18 source IPs and force password resets for targeted accounts. Short-term: tighten rate-limiter thresholds and enable CAPTCHA for repeated failures. Long-term: implement adaptive authentication and monitor breach databases.',
-      impactUsers: 'Targeted accounts', impactRevenue: 'Low', impactSLA: 'OK'
+      shap_factors: [
+        { feature: 'Failed auth rate', value: 0.94, direction: 'positive' },
+        { feature: 'Source IP reputation', value: 0.88, direction: 'positive' },
+        { feature: 'Key age', value: 0.61, direction: 'positive' },
+        { feature: 'Request volume', value: 0.57, direction: 'positive' }
+      ],
+      actions: ['service_restart'],
+      action_risks: ['Medium'],
+      plan: [
+        'Rate-limit auth endpoint to 10 requests/minute per IP',
+        'Block the 3 offending IP addresses at the firewall',
+        'Rotate JWT signing key',
+        'Restart auth service to purge in-memory session state',
+        'Enable CAPTCHA for repeated failed logins'
+      ]
     },
     'Data': {
+      root_cause: 'Database replica lag exceeded 45 seconds due to a large bulk migration job running concurrently with peak read traffic.',
+      confidence: 0.83,
       evidence: [
-        'Replication lag between primary and replica exceeded 4 minutes',
-        'Read queries routed to replica returning stale data',
-        'Replica I/O thread stopped at 14:08 UTC',
-        'Disk I/O on replica host at 98% utilisation'
+        'Replica lag: 47 seconds (threshold: 5 seconds)',
+        'Bulk migration job started at 14:30 UTC',
+        'Read traffic 340% of normal baseline',
+        'Write-ahead log (WAL) accumulation rate: 2.4 GB/hour'
       ],
-      rootCause: 'Disk I/O saturation on the replica host caused the replication I/O thread to stall. A large batch export job running on the replica was competing for the same disk bandwidth as incoming replication events.',
-      recommendation: 'Immediate: stop the batch export job and restart the replication I/O thread. Short-term: route batch jobs to a dedicated read replica. Long-term: separate analytical and operational workloads at the infrastructure level.',
-      impactUsers: 'Read-heavy features', impactRevenue: 'Medium', impactSLA: 'At risk'
+      shap_factors: [
+        { feature: 'Replica lag seconds', value: 0.89, direction: 'positive' },
+        { feature: 'WAL accumulation', value: 0.72, direction: 'positive' },
+        { feature: 'Migration job active', value: 0.65, direction: 'positive' },
+        { feature: 'Read traffic spike', value: 0.58, direction: 'positive' }
+      ],
+      actions: ['scale_up', 'db_connection_pool'],
+      action_risks: ['Medium', 'Medium'],
+      plan: [
+        'Pause the bulk migration job immediately',
+        'Scale up read replicas to handle traffic',
+        'Expand connection pool to reduce queuing',
+        'Reschedule migration to off-peak hours',
+        'Monitor replica lag until below 2 seconds'
+      ]
     },
     'Other': {
+      root_cause: 'Misconfigured health-check timeout caused the load balancer to mark healthy instances as unhealthy, triggering cascading failures.',
+      confidence: 0.76,
       evidence: [
-        'Alert triggered by automated monitoring',
-        'Service metrics showing deviation from normal baseline',
-        'Recent change or deployment may be a contributing factor'
+        'Load balancer health check timeout set to 1 second (service needs 3 seconds to respond)',
+        '60% of healthy instances marked unhealthy',
+        'Remaining instances overwhelmed with redirected traffic',
+        'Config change deployed 20 minutes before incident'
       ],
-      rootCause: 'Root cause is under investigation. Initial signals suggest a configuration or dependency change contributed to the incident.',
-      recommendation: 'Review recent deployments and configuration changes. Check upstream dependencies. Escalate to service owner for further investigation.',
-      impactUsers: 'Unknown', impactRevenue: 'Unknown', impactSLA: 'Unknown'
+      shap_factors: [
+        { feature: 'Health-check timeout', value: 0.82, direction: 'positive' },
+        { feature: 'Instance failure rate', value: 0.75, direction: 'positive' },
+        { feature: 'Config change recency', value: 0.63, direction: 'positive' },
+        { feature: 'Traffic redistribution', value: 0.51, direction: 'positive' }
+      ],
+      actions: ['service_restart', 'log_cleanup'],
+      action_risks: ['Low', 'Low'],
+      plan: [
+        'Update health-check timeout to 5 seconds',
+        'Force re-evaluation of all instances by the load balancer',
+        'Restart services still marked unhealthy',
+        'Clean old health check logs',
+        'Set alert threshold for health-check failure rate > 10%'
+      ]
     }
   };
 
-  /* ── risk scoring ── */
-  const _riskScore = (severity, type) => {
-    const sevScore  = { Critical: 90, High: 65, Medium: 40, Low: 15 };
-    const typeScore = { Availability: 20, Performance: 15, Security: 18, Data: 12, Network: 10, Other: 5 };
-    return Math.min(100, (sevScore[severity] || 50) + (typeScore[type] || 5));
+  /* ── blast radius by type ─────────────────────────────────────── */
+  const BLAST_RADIUS = {
+    'Performance':  [
+      { service: 'api-gateway',     impact: 85, level: 'critical' },
+      { service: 'payment-service', impact: 72, level: 'high' },
+      { service: 'user-service',    impact: 45, level: 'medium' }
+    ],
+    'Availability': [
+      { service: 'api-gateway',     impact: 90, level: 'critical' },
+      { service: 'frontend-web',    impact: 80, level: 'critical' },
+      { service: 'notification-svc',impact: 35, level: 'low' }
+    ],
+    'Network':      [
+      { service: 'auth-service',    impact: 60, level: 'high' },
+      { service: 'api-gateway',     impact: 55, level: 'high' },
+      { service: 'session-store',   impact: 30, level: 'medium' }
+    ],
+    'Security':     [
+      { service: 'auth-service',    impact: 95, level: 'critical' },
+      { service: 'user-service',    impact: 70, level: 'high' },
+      { service: 'session-store',   impact: 65, level: 'high' }
+    ],
+    'Data':         [
+      { service: 'primary-db',      impact: 80, level: 'critical' },
+      { service: 'reporting-svc',   impact: 60, level: 'high' },
+      { service: 'analytics-api',   impact: 40, level: 'medium' }
+    ],
+    'Other':        [
+      { service: 'api-gateway',     impact: 50, level: 'medium' },
+      { service: 'health-checker',  impact: 40, level: 'medium' }
+    ]
   };
 
-  /* ── seed incidents ── */
-  const _incidents = [
+  /* ── 13 seed incidents (7 open/investigating, 6 resolved) ─────── */
+  const _seedIncidents = [
     {
-      id: 'INC-2901',
-      title: 'Database CPU High — production-db-01',
-      severity: 'Critical',
-      status: 'Investigating',
-      type: 'Performance',
-      service: 'database-primary',
-      environment: 'Production',
-      description: 'CPU utilization on production-db-01 has been above 90% for the past 12 minutes. Slow query alerts are firing. The payments table appears to have a lock contention issue.',
-      createdAt: minsAgo(18),
-      updatedAt: minsAgo(4),
-      createdBy: 'Jane Smith',
-      resolvedAt: null
+      id: uid(), title: 'Database CPU spike — production-db-01',
+      severity: 'Critical', type: 'Performance', service: 'production-db-01',
+      environment: 'Production', status: 'Investigating',
+      description: 'CPU usage at 98% for 12 minutes. Queries timing out. Connection pool exhausted.',
+      created_at: ago(35), updated_at: ago(10), resolution: null, mttr: null
     },
     {
-      id: 'INC-2902',
-      title: 'Payment API Timeout — checkout service',
-      severity: 'Critical',
-      status: 'Open',
-      type: 'Network',
-      service: 'payment-api',
-      environment: 'Production',
-      description: 'Payment API requests timing out. Error: ECONNRESET after 30 s. Affects all users attempting checkout. Error rate 38%. Started at approximately 14:22 UTC.',
-      createdAt: minsAgo(35),
-      updatedAt: minsAgo(8),
-      createdBy: 'Admin User',
-      resolvedAt: null
+      id: uid(), title: 'Auth service crash loop — auth-svc-prod',
+      severity: 'Critical', type: 'Availability', service: 'auth-service',
+      environment: 'Production', status: 'Open',
+      description: 'OOMKilled 7 times in 30 minutes after deployment v3.4.1.',
+      created_at: ago(28), updated_at: ago(5), resolution: null, mttr: null
     },
     {
-      id: 'INC-2903',
-      title: 'Service Unavailable — auth-service pods crash-looping',
-      severity: 'High',
-      status: 'Open',
-      type: 'Availability',
-      service: 'auth-service',
-      environment: 'Production',
-      description: 'Auth service returning 503 for all requests. Pods are in CrashLoopBackOff state. Memory limit hit. Users unable to log in.',
-      createdAt: minsAgo(52),
-      updatedAt: minsAgo(12),
-      createdBy: 'Jane Smith',
-      resolvedAt: null
+      id: uid(), title: 'Payment API latency elevated — p99 > 8s',
+      severity: 'High', type: 'Performance', service: 'payment-api',
+      environment: 'Production', status: 'Investigating',
+      description: 'p99 latency jumped from 200 ms to 8.4 s. Affecting checkout flow.',
+      created_at: ago(52), updated_at: ago(15), resolution: null, mttr: null
     },
     {
-      id: 'INC-2904',
-      title: 'Memory Usage High — order-service',
-      severity: 'High',
-      status: 'Investigating',
-      type: 'Performance',
-      service: 'order-service',
-      environment: 'Production',
-      description: 'Memory usage on order-service instances has been climbing steadily. Currently at 87% of limit. If not addressed, OOM kill expected within 30 minutes.',
-      createdAt: hrsAgo(2),
-      updatedAt: minsAgo(22),
-      createdBy: 'Admin User',
-      resolvedAt: null
+      id: uid(), title: 'DNS resolution failures — inter-service',
+      severity: 'High', type: 'Network', service: 'api-gateway',
+      environment: 'Production', status: 'Open',
+      description: 'Packet loss 8.3%. DNS latency 2400 ms after network policy update.',
+      created_at: ago(18), updated_at: ago(8), resolution: null, mttr: null
     },
     {
-      id: 'INC-2905',
-      title: 'Payment Failure — Stripe webhook 400 errors',
-      severity: 'Medium',
-      status: 'Open',
-      type: 'Data',
-      service: 'billing-service',
-      environment: 'Production',
-      description: 'Stripe webhook endpoint returning HTTP 400. Payment confirmations not being processed. Affects post-payment order fulfilment. ~200 orders pending confirmation.',
-      createdAt: hrsAgo(1),
-      updatedAt: minsAgo(41),
-      createdBy: 'Jane Smith',
-      resolvedAt: null
+      id: uid(), title: 'Brute-force attack on login endpoint',
+      severity: 'Medium', type: 'Security', service: 'auth-service',
+      environment: 'Production', status: 'Investigating',
+      description: '4,200 failed login attempts in 10 minutes from 3 IP addresses.',
+      created_at: ago(45), updated_at: ago(20), resolution: null, mttr: null
     },
     {
-      id: 'INC-2906',
-      title: 'Database Replica Lag — read queries returning stale data',
-      severity: 'Medium',
-      status: 'Investigating',
-      type: 'Data',
-      service: 'database-replica',
-      environment: 'Production',
-      description: 'Replication lag on the primary read replica has exceeded 4 minutes. Users on product listing and dashboard pages seeing data that is up to 4 minutes old.',
-      createdAt: hrsAgo(3),
-      updatedAt: hrsAgo(1),
-      createdBy: 'Admin User',
-      resolvedAt: null
+      id: uid(), title: 'DB replica lag exceeds 45 seconds',
+      severity: 'Medium', type: 'Data', service: 'primary-db',
+      environment: 'Production', status: 'Open',
+      description: 'Replica lag at 47 s. Bulk migration running concurrently with peak traffic.',
+      created_at: ago(62), updated_at: ago(30), resolution: null, mttr: null
     },
     {
-      id: 'INC-2907',
-      title: 'API Rate Limit Errors — third-party maps service',
-      severity: 'Low',
-      status: 'Open',
-      type: 'Network',
-      service: 'location-service',
-      environment: 'Production',
-      description: 'HTTP 429 errors from maps provider. Location features degraded. Non-critical user-facing impact. Need to review quota usage and implement caching.',
-      createdAt: hrsAgo(4),
-      updatedAt: hrsAgo(2),
-      createdBy: 'Jane Smith',
-      resolvedAt: null
+      id: uid(), title: 'Load balancer mis-routing healthy pods',
+      severity: 'Low', type: 'Other', service: 'api-gateway',
+      environment: 'Staging', status: 'Open',
+      description: 'Health-check timeout too low. 60% of healthy instances marked unhealthy.',
+      created_at: ago(90), updated_at: ago(45), resolution: null, mttr: null
     },
-    /* ── resolved incidents (history) ── */
+
+    /* ── Resolved ────────────────────────────────────────────────── */
     {
-      id: 'INC-2895',
-      title: 'Database CPU High — analytics-db spike',
-      severity: 'High',
-      status: 'Resolved',
-      type: 'Performance',
-      service: 'analytics-db',
-      environment: 'Production',
-      description: 'Analytics database CPU spiked to 98% during batch report generation. Resolved by rescheduling the batch job to off-peak hours.',
-      createdAt: daysAgo(1),
-      updatedAt: daysAgo(1),
-      createdBy: 'Admin User',
-      resolvedAt: daysAgo(1),
-      resolution: 'Rescheduled batch job. Added CPU alert at 80% threshold.',
-      mttr: '34 min'
+      id: uid(), title: 'Redis memory exhaustion — cache-01',
+      severity: 'High', type: 'Performance', service: 'cache-01',
+      environment: 'Production', status: 'Resolved',
+      description: 'Redis hit 99% memory limit. Eviction policy triggered, causing cache misses.',
+      created_at: ago(300), updated_at: ago(240),
+      resolution: 'Increased Redis maxmemory to 4 GB and restarted the service. Cache miss rate returned to normal within 5 minutes.',
+      mttr: 58
     },
     {
-      id: 'INC-2890',
-      title: 'Service Unavailable — notification-service down',
-      severity: 'Medium',
-      status: 'Resolved',
-      type: 'Availability',
-      service: 'notification-service',
-      environment: 'Production',
-      description: 'Email and push notification service went down due to a misconfigured environment variable after a deploy.',
-      createdAt: daysAgo(2),
-      updatedAt: daysAgo(2),
-      createdBy: 'Jane Smith',
-      resolvedAt: daysAgo(2),
-      resolution: 'Rolled back deploy. Corrected environment variable. Redeployed.',
-      mttr: '18 min'
+      id: uid(), title: 'Certificate expiry — wildcard TLS cert',
+      severity: 'Critical', type: 'Security', service: 'api-gateway',
+      environment: 'Production', status: 'Resolved',
+      description: 'Wildcard TLS certificate expired. HTTPS connections rejected.',
+      created_at: ago(480), updated_at: ago(460),
+      resolution: 'Renewed certificate via Let\'s Encrypt and reloaded nginx. Downtime: 18 minutes.',
+      mttr: 22
     },
     {
-      id: 'INC-2885',
-      title: 'Payment Failure — expired API key',
-      severity: 'Critical',
-      status: 'Resolved',
-      type: 'Data',
-      service: 'payment-api',
-      environment: 'Production',
-      description: 'Payment processor API key expired causing all payment attempts to fail for 22 minutes.',
-      createdAt: daysAgo(3),
-      updatedAt: daysAgo(3),
-      createdBy: 'Admin User',
-      resolvedAt: daysAgo(3),
-      resolution: 'Rotated API key. Added 30-day expiry alert to secrets manager.',
-      mttr: '22 min'
+      id: uid(), title: 'Disk full — log volume /var/log',
+      severity: 'High', type: 'Availability', service: 'app-server-03',
+      environment: 'Production', status: 'Resolved',
+      description: '/var/log at 100% capacity. Service writes failing. Log cleanup + resize applied.',
+      created_at: ago(720), updated_at: ago(680),
+      resolution: 'Ran log cleanup script (removed 12 GB of logs > 14 days). Added logrotate cron. Volume resized to 50 GB.',
+      mttr: 35
     },
     {
-      id: 'INC-2880',
-      title: 'API Timeout — search service cold start',
-      severity: 'Medium',
-      status: 'Resolved',
-      type: 'Network',
-      service: 'search-service',
-      environment: 'Production',
-      description: 'Search service scaled to zero overnight. Cold start on first morning request caused 45 s timeout for ~800 users.',
-      createdAt: daysAgo(4),
-      updatedAt: daysAgo(4),
-      createdBy: 'Jane Smith',
-      resolvedAt: daysAgo(4),
-      resolution: 'Enabled minimum instance count of 1. Added warm-up endpoint.',
-      mttr: '12 min'
+      id: uid(), title: 'Notification service deployment failure',
+      severity: 'Medium', type: 'Availability', service: 'notification-svc',
+      environment: 'Production', status: 'Resolved',
+      description: 'Deployment v2.1.0 failed — missing env var SMTP_HOST caused startup crash.',
+      created_at: ago(1440), updated_at: ago(1420),
+      resolution: 'Added missing SMTP_HOST env var and redeployed. Service healthy.',
+      mttr: 15
     },
     {
-      id: 'INC-2875',
-      title: 'Memory Usage High — image processing worker',
-      severity: 'High',
-      status: 'Resolved',
-      type: 'Performance',
-      service: 'media-service',
-      environment: 'Production',
-      description: 'Image processing workers consuming excessive memory due to a bug introduced in v2.4.1 that failed to release buffers after processing.',
-      createdAt: daysAgo(5),
-      updatedAt: daysAgo(5),
-      createdBy: 'Admin User',
-      resolvedAt: daysAgo(5),
-      resolution: 'Deployed hotfix v2.4.2. Confirmed memory stable below 60%.',
-      mttr: '55 min'
+      id: uid(), title: 'Frontend CDN latency spike — EU region',
+      severity: 'Medium', type: 'Network', service: 'cdn-eu',
+      environment: 'Production', status: 'Resolved',
+      description: 'CDN origin latency increased 10× in EU region. Cache bypass observed.',
+      created_at: ago(2880), updated_at: ago(2850),
+      resolution: 'CDN cache TTL misconfiguration corrected. Cache hit rate restored to 94%. Latency normal.',
+      mttr: 28
     },
     {
-      id: 'INC-2870',
-      title: 'Database Replica Lag — report generation overload',
-      severity: 'Low',
-      status: 'Resolved',
-      type: 'Data',
-      service: 'reporting-db',
-      environment: 'Production',
-      description: 'Unthrottled report generation job saturated replica disk I/O causing replication lag.',
-      createdAt: daysAgo(6),
-      updatedAt: daysAgo(6),
-      createdBy: 'Jane Smith',
-      resolvedAt: daysAgo(6),
-      resolution: 'Added I/O throttle to report job. Isolated to dedicated replica.',
-      mttr: '28 min'
-    },
-    {
-      id: 'INC-2865',
-      title: 'Service Unavailable — staging deploy went to production',
-      severity: 'Critical',
-      status: 'Resolved',
-      type: 'Availability',
-      service: 'api-gateway',
-      environment: 'Production',
-      description: 'A CI/CD pipeline misconfiguration deployed a staging build to the production environment, causing immediate downtime.',
-      createdAt: daysAgo(7),
-      updatedAt: daysAgo(7),
-      createdBy: 'Admin User',
-      resolvedAt: daysAgo(7),
-      resolution: 'Immediate rollback. Pipeline environment checks added. Post-mortem complete.',
-      mttr: '9 min'
+      id: uid(), title: 'Scheduled job causing connection storm',
+      severity: 'Low', type: 'Performance', service: 'scheduler-svc',
+      environment: 'Production', status: 'Resolved',
+      description: 'Cron job opened 500 simultaneous DB connections at 03:00 UTC.',
+      created_at: ago(4320), updated_at: ago(4300),
+      resolution: 'Added connection pooling to scheduler. Max concurrency capped at 20 connections.',
+      mttr: 18
     }
   ];
 
-  /* ── volume data (last 7 days) ── */
-  const _volume = (() => {
-    const labels = [];
-    const counts = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      labels.push(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-      counts.push(Math.floor(Math.random() * 8) + 2);
-    }
-    return { labels, counts };
-  })();
+  /* ── In-memory store ──────────────────────────────────────────── */
+  let _incidents = [..._seedIncidents];
+  let _listeners = [];
+  let _currentUserEmail = null;   // set by app.js after login so incidents are tagged
 
-  /* ================================================================
-     PUBLIC API
-     ================================================================ */
-  return {
+  function setCurrentUser(email) { _currentUserEmail = email; }
 
-    /* ── auth ── */
-    findUser(email, password) {
-      return _users.find(u =>
-        u.email.toLowerCase() === email.toLowerCase() && u.password === password
-      ) || null;
-    },
-    registerUser(name, email, password) {
-      if (_users.find(u => u.email.toLowerCase() === email.toLowerCase())) return false;
-      _users.push({ name, email, password });
-      return true;
-    },
+  /* ── Live signal templates for auto-arriving incidents ───────── */
+  const LIVE_TEMPLATES = [
+    { title: 'Memory leak detected — worker-service',         severity: 'High',     type: 'Availability', service: 'worker-service',   description: 'Worker process memory growing unbounded. 840 MB and climbing.' },
+    { title: 'API gateway 503 errors — 12% error rate',       severity: 'Critical', type: 'Availability', service: 'api-gateway',       description: 'API gateway returning 503 to 12% of requests. Upstream timeout.' },
+    { title: 'Slow query — analytics dashboard times out',    severity: 'Medium',   type: 'Performance',  service: 'analytics-db',      description: 'Dashboard query taking > 45 s. Affecting all reporting users.' },
+    { title: 'SSH brute-force — bastion-01 flagged',          severity: 'High',     type: 'Security',     service: 'bastion-01',        description: '2,800 SSH attempts in 5 min from unknown IPs. Root login attempted.' },
+    { title: 'Order service pod crash loop — staging',        severity: 'Low',      type: 'Availability', service: 'order-service',     description: 'Pod restarting every 2 minutes in staging after merge to main.' },
+    { title: 'Kafka consumer lag — 240k messages behind',     severity: 'High',     type: 'Performance',  service: 'kafka-consumer',    description: 'Event processing consumer 240,000 messages behind. Alerts delayed.' },
+    { title: 'Object storage quota at 98% — S3 bucket',      severity: 'Medium',   type: 'Data',         service: 's3-media-bucket',   description: 'Media bucket at 98% capacity. Uploads beginning to fail.' },
+    { title: 'TLS handshake failures — payment gateway',      severity: 'Critical', type: 'Network',      service: 'payment-gateway',   description: 'Intermittent TLS 1.2 handshake failures causing payment timeouts.' },
+    { title: 'Elasticsearch index size warning — logs-idx',   severity: 'Low',      type: 'Data',         service: 'elasticsearch',     description: 'Log index shard size exceeding 50 GB. Approaching limit.' },
+    { title: 'Config server unreachable — config-svc',        severity: 'High',     type: 'Availability', service: 'config-service',    description: 'Config service health check failing. 3 dependent services degraded.' }
+  ];
 
-    /* ── incidents CRUD ── */
-    getIncidents(statusFilter) {
-      const open = _incidents.filter(i => i.status !== 'Resolved');
-      if (!statusFilter || statusFilter === 'all') return [...open];
-      return open.filter(i => i.status === statusFilter);
-    },
+  let _liveIdx = 0;
 
-    getHistory() {
-      return _incidents.filter(i => i.status === 'Resolved').sort((a,b) => new Date(b.resolvedAt) - new Date(a.resolvedAt));
-    },
-
-    getAll() { return [..._incidents]; },
-
-    getById(id) { return _incidents.find(i => i.id === id) || null; },
-
-    createIncident({ title, severity, type, service, environment, description, createdBy, imageDataUrl }) {
-      const inc = {
-        id: newId(),
-        title: title.trim(),
-        severity,
-        status: 'Open',
-        type: type || 'Other',
-        service: (service || '').trim(),
-        environment: environment || 'Production',
-        description: description.trim(),
-        imageDataUrl: imageDataUrl || null,
-        createdAt: nowISO(),
-        updatedAt: nowISO(),
-        createdBy: createdBy || 'User',
-        resolvedAt: null
-      };
-      _incidents.unshift(inc);
-      _emit('incident:created', inc);
-      return inc;
-    },
-
-    updateStatus(id, newStatus, resolution) {
-      const inc = _incidents.find(i => i.id === id);
-      if (!inc) return null;
-      inc.status    = newStatus;
-      inc.updatedAt = nowISO();
-      if (newStatus === 'Resolved') {
-        inc.resolvedAt = nowISO();
-        inc.resolution = resolution || 'Resolved by team.';
-        inc.mttr = _calcMTTR(inc.createdAt, inc.resolvedAt);
-      }
-      _emit('incident:updated', inc);
-      return inc;
-    },
-
-    /* ── analysis ── */
-    analyse(inc) {
-      const template = _analysisMap[inc.type] || _analysisMap['Other'];
-      return {
-        summary: inc.description,
-        evidence: template.evidence,
-        rootCause: template.rootCause,
-        recommendation: template.recommendation,
-        impact: {
-          users:   template.impactUsers,
-          revenue: template.impactRevenue,
-          sla:     template.impactSLA
-        },
-        risk: _riskScore(inc.severity, inc.type)
-      };
-    },
-
-    /* ── chart data ── */
-    getSeverityCounts() {
-      const open = _incidents.filter(i => i.status !== 'Resolved');
-      const c = { Critical: 0, High: 0, Medium: 0, Low: 0 };
-      open.forEach(i => { if (c[i.severity] !== undefined) c[i.severity]++; });
-      return c;
-    },
-
-    getTypeCounts() {
-      const open = _incidents.filter(i => i.status !== 'Resolved');
-      const c = {};
-      open.forEach(i => { c[i.type] = (c[i.type] || 0) + 1; });
-      return c;
-    },
-
-    getVolume() { return _volume; },
-
-    /* ── live signal subscription ── */
-    subscribe(fn) { _listeners.push(fn); },
-    unsubscribe(fn) {
-      const idx = _listeners.indexOf(fn);
-      if (idx > -1) _listeners.splice(idx, 1);
-    },
-
-    /* ── simulate live incoming alerts ── */
-    startLiveSignals() {
-      const liveIncidents = [
-        { title: 'Database CPU High — reporting-db spike', severity: 'High', type: 'Performance', service: 'reporting-db', environment: 'Production', description: 'Reporting database CPU spiked to 91% following a scheduled report run at 15:00 UTC.' },
-        { title: 'API Timeout — user-service /profile endpoint', severity: 'Medium', type: 'Network', service: 'user-service', environment: 'Production', description: 'Profile API requests timing out intermittently. p99 latency: 8 200 ms. Affecting ~5% of users.' },
-        { title: 'Memory Usage High — cache service', severity: 'Low', type: 'Performance', service: 'cache-service', environment: 'Production', description: 'In-memory cache service memory at 82% of limit. No OOM events yet but monitoring closely.' },
-        { title: 'Payment Failure — invalid card BIN list', severity: 'Medium', type: 'Data', service: 'payment-api', environment: 'Production', description: 'BIN validation rejecting valid cards due to stale lookup table. Affects ~3% of transactions.' }
-      ];
-      let idx = 0;
-      return setInterval(() => {
-        if (idx >= liveIncidents.length) return;
-        const data = { ...liveIncidents[idx++], createdBy: 'System Monitor' };
-        const inc  = this.createIncident(data);
-        _emit('live:new', inc);
-      }, 45000); // every 45 s
-    }
-  };
-
-  /* ── private ── */
-  function _calcMTTR(createdAt, resolvedAt) {
-    const mins = Math.round((new Date(resolvedAt) - new Date(createdAt)) / 60000);
-    if (mins < 60) return `${mins} min`;
-    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+  /* ── Public API ───────────────────────────────────────────────── */
+  function getAll()      { return [..._incidents]; }
+  function getById(id)   { return _incidents.find(i => i.id === id) || null; }
+  function getOpen()     { return _incidents.filter(i => i.status !== 'Resolved'); }
+  function getResolved() { return _incidents.filter(i => i.status === 'Resolved'); }
+  function getCritical() { return _incidents.filter(i => (i.severity === 'Critical' || i.severity === 'High') && i.status !== 'Resolved'); }
+  function getAwaiting() {
+    // Returns incidents that have at least one action with status 'awaiting_approval'
+    // on their cached _rca object (set by Investigation.open or CSV import)
+    return _incidents.filter(i => {
+      if (i.status === 'Resolved') return false;
+      if (i._awaitingApproval) return true;   // legacy flag
+      if (i._rca?.actions?.some(a => a.status === 'awaiting_approval')) return true;
+      return false;
+    });
   }
-})();
 
-window.Store = Store;
+  function add(inc) {
+    const full = {
+      id: uid(),
+      status: 'Open',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      resolution: null,
+      mttr: null,
+      environment: 'Production',
+      createdBy: _currentUserEmail || null,   // tag which user created this incident
+      ...inc
+    };
+    _incidents.unshift(full);
+    _notify('add', full);
+    return full;
+  }
+
+  function update(id, patch) {
+    const idx = _incidents.findIndex(i => i.id === id);
+    if (idx === -1) return null;
+    _incidents[idx] = { ..._incidents[idx], ...patch, updated_at: new Date().toISOString() };
+    _notify('update', _incidents[idx]);
+    return _incidents[idx];
+  }
+
+  function resolve(id, resolutionNote) {
+    const inc = getById(id);
+    if (!inc) return null;
+    const created = new Date(inc.created_at);
+    const now = new Date();
+    const mttr = Math.round((now - created) / 60000);
+    return update(id, {
+      status: 'Resolved',
+      resolution: resolutionNote || 'Resolved by team.',
+      mttr,
+      updated_at: now.toISOString()
+    });
+  }
+
+  function subscribe(fn) { _listeners.push(fn); }
+  function _notify(type, data) { _listeners.forEach(fn => fn(type, data)); }
+
+  /* ── RCA / pipeline simulation ─────────────────────────────────── */
+  function getRCA(incidentId) {
+    const inc = getById(incidentId);
+    if (!inc) return null;
+    const tpl = RCA_TEMPLATES[inc.type] || RCA_TEMPLATES['Other'];
+    const riskScore = { Critical: 85, High: 65, Medium: 40, Low: 18 }[inc.severity] || 40;
+    const actions = tpl.actions.map((key, i) => {
+      const tmpl     = ACTION_TEMPLATES[key];
+      const riskLevel = tpl.action_risks[i] || 'Low';
+      // Use Config to determine initial status — respects policy settings
+      // Config may not be loaded in some edge cases, fall back to Low=auto
+      const autoOk = (typeof Config !== 'undefined')
+        ? Config.shouldAutoExecute(riskLevel)
+        : (riskLevel === 'Low');
+      return {
+        id: uid(),
+        type: key,
+        name: tmpl.name,
+        command: tmpl.command.replace(/{service}/g, inc.service || 'app'),
+        rollback_command: tmpl.rollback ? tmpl.rollback.replace(/{service}/g, inc.service || 'app') : null,
+        description: tmpl.description,
+        risk_level: riskLevel,
+        confidence: tpl.confidence - (i * 0.05),
+        status: autoOk ? 'auto_approved' : 'awaiting_approval',
+        execution_result: null,
+        verification_result: null
+      };
+    });
+
+    return {
+      root_cause: tpl.root_cause,
+      confidence: tpl.confidence,
+      evidence: tpl.evidence,
+      shap_factors: tpl.shap_factors,
+      blast_radius: BLAST_RADIUS[inc.type] || BLAST_RADIUS['Other'],
+      resolution_steps: tpl.plan,
+      risk_score: riskScore,
+      actions
+    };
+  }
+
+  /* Simulate executing a single action.
+     If ALL actions for an incident pass verification, auto-resolve the incident. */
+  function executeAction(action) {
+    const success = action.risk_level !== 'High' || Math.random() > 0.15;
+    return {
+      ...action,
+      status: success ? 'completed' : 'failed',
+      execution_result: success
+        ? { output: 'Command completed successfully.', duration_s: (Math.random() * 4 + 1).toFixed(1), executor: 'AI Agent' }
+        : { output: 'Execution failed: connection timeout. Rollback initiated.', duration_s: '8.3', executor: 'AI Agent' },
+      verification_result: success
+        ? { passed: true, message: 'Service metrics returned to normal. Incident resolved.' }
+        : { passed: false, message: 'Metrics still abnormal. Manual intervention needed.' }
+    };
+  }
+
+  /* Auto-resolve an incident if all executable actions passed verification.
+     Called by investigation.js after each auto-execution batch completes. */
+  function tryAutoResolve(incidentId) {
+    const inc = getById(incidentId);
+    if (!inc || inc.status === 'Resolved') return false;
+    const rca = inc._rca;
+    if (!rca?.actions?.length) return false;
+
+    // Only auto-resolve if every non-rejected action that was executed passed
+    const executed = rca.actions.filter(a => a.status === 'completed' || a.status === 'failed');
+    const pending  = rca.actions.filter(a => a.status === 'awaiting_approval');
+    // Don't resolve if any actions are still pending approval
+    if (pending.length > 0) return false;
+    // Don't resolve if nothing was executed
+    if (executed.length === 0) return false;
+    // Fail if any executed action failed verification
+    const allPassed = executed.every(a => a.verification_result?.passed);
+    if (!allPassed) return false;
+
+    const actionNames = executed.map(a => a.name).join(', ');
+    resolve(incidentId, `Auto-resolved by AI pipeline. Actions executed: ${actionNames}. All verification checks passed.`);
+    return true;
+  }
+
+  /* ── Live incident generator ─────────────────────────────────── */
+  let _liveTimer = null;
+  let _liveCallbacks = [];
+
+  function onLiveIncident(fn) { _liveCallbacks.push(fn); }
+
+  function startLiveSignals(intervalMs) {
+    if (_liveTimer) return;
+    _liveTimer = setInterval(() => {
+      const tpl = LIVE_TEMPLATES[_liveIdx % LIVE_TEMPLATES.length];
+      _liveIdx++;
+      const inc = add({
+        ...tpl,
+        status: 'Open',
+        environment: 'Production'
+      });
+      _liveCallbacks.forEach(fn => fn(inc));
+    }, intervalMs || 45000);
+  }
+
+  function stopLiveSignals() {
+    if (_liveTimer) { clearInterval(_liveTimer); _liveTimer = null; }
+  }
+
+  function isLiveActive() { return !!_liveTimer; }
+
+  /* ── Formatting helpers (shared across modules) ─────────────────── */
+  function severityBadge(sev) {
+    const map = { Critical: 'badge-critical', High: 'badge-high', Medium: 'badge-medium', Low: 'badge-low' };
+    return `<span class="badge ${map[sev] || 'badge-low'}">${sev}</span>`;
+  }
+  function statusBadge(st) {
+    const map = { Open: 'badge-open', Investigating: 'badge-investigating', Resolved: 'badge-resolved' };
+    return `<span class="badge ${map[st] || 'badge-open'}">${st}</span>`;
+  }
+  function riskBadge(level) {
+    const map = { Low: 'badge-low', Medium: 'badge-medium', High: 'badge-high', Critical: 'badge-critical' };
+    const cls = map[level] || 'badge-high';
+    return `<span class="badge ${cls}">${level} Risk</span>`;
+  }
+  function relativeTime(iso) {
+    const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+    if (diff < 60)   return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400)return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  return {
+    uid, ago, fmtTime,
+    getAll, getById, getOpen, getResolved, getCritical, getAwaiting,
+    add, update, resolve, tryAutoResolve,
+    getRCA, executeAction,
+    subscribe,
+    setCurrentUser,
+    startLiveSignals, stopLiveSignals, isLiveActive, onLiveIncident,
+    severityBadge, statusBadge, riskBadge, relativeTime,
+    ACTION_TEMPLATES, RCA_TEMPLATES, BLAST_RADIUS
+  };
+})();
